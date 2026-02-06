@@ -26,7 +26,7 @@ pub(super) async fn spawn_dataflow(
     session_id: SessionId,
     dataflow: Descriptor,
     local_working_dir: Option<PathBuf>,
-    daemon_connections: &mut DaemonConnections,
+    daemon_connections: &DaemonConnections,
     clock: &HLC,
     uv: bool,
     write_events_to: Option<PathBuf>,
@@ -86,7 +86,7 @@ pub(super) async fn spawn_dataflow(
 }
 
 async fn spawn_dataflow_on_machine(
-    daemon_connections: &mut DaemonConnections,
+    daemon_connections: &DaemonConnections,
     machine: Option<&str>,
     message: &[u8],
 ) -> Result<DaemonId, eyre::ErrReport> {
@@ -102,7 +102,7 @@ async fn spawn_dataflow_on_machine(
             .clone(),
     };
 
-    let daemon_connection = daemon_connections
+    let mut daemon_connection = daemon_connections
         .get_mut(&daemon_id)
         .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?;
     tcp_send(&mut daemon_connection.stream, message)

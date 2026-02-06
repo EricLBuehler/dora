@@ -2,49 +2,60 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use uuid::Uuid;
 
+use std::collections::BTreeSet;
+
 use crate::{
     BuildId, SessionId,
-    common::GitSource,
+    common::{DaemonId, GitSource},
+    coordinator_to_cli::{
+        CliAndDefaultDaemonIps, ControlRequestReply, DataflowInfo, DataflowList, NodeInfo,
+    },
     descriptor::Descriptor,
     id::{NodeId, OperatorId},
 };
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct BuildRequest {
+    pub session_id: SessionId,
+    pub dataflow: Descriptor,
+    pub git_sources: BTreeMap<NodeId, GitSource>,
+    pub prev_git_sources: BTreeMap<NodeId, GitSource>,
+    /// Allows overwriting the base working dir when CLI and daemon are
+    /// running on the same machine.
+    ///
+    /// Must not be used for multi-machine dataflows.
+    ///
+    /// Note that nodes with git sources still use a subdirectory of
+    /// the base working dir.
+    pub local_working_dir: Option<PathBuf>,
+    pub uv: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct StartRequest {
+    pub build_id: Option<BuildId>,
+    pub session_id: SessionId,
+    pub dataflow: Descriptor,
+    pub name: Option<String>,
+    /// Allows overwriting the base working dir when CLI and daemon are
+    /// running on the same machine.
+    ///
+    /// Must not be used for multi-machine dataflows.
+    ///
+    /// Note that nodes with git sources still use a subdirectory of
+    /// the base working dir.
+    pub local_working_dir: Option<PathBuf>,
+    pub uv: bool,
+    pub write_events_to: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequest {
-    Build {
-        session_id: SessionId,
-        dataflow: Descriptor,
-        git_sources: BTreeMap<NodeId, GitSource>,
-        prev_git_sources: BTreeMap<NodeId, GitSource>,
-        /// Allows overwriting the base working dir when CLI and daemon are
-        /// running on the same machine.
-        ///
-        /// Must not be used for multi-machine dataflows.
-        ///
-        /// Note that nodes with git sources still use a subdirectory of
-        /// the base working dir.
-        local_working_dir: Option<PathBuf>,
-        uv: bool,
-    },
+    Build(BuildRequest),
     WaitForBuild {
         build_id: BuildId,
     },
-    Start {
-        build_id: Option<BuildId>,
-        session_id: SessionId,
-        dataflow: Descriptor,
-        name: Option<String>,
-        /// Allows overwriting the base working dir when CLI and daemon are
-        /// running on the same machine.
-        ///
-        /// Must not be used for multi-machine dataflows.
-        ///
-        /// Note that nodes with git sources still use a subdirectory of
-        /// the base working dir.
-        local_working_dir: Option<PathBuf>,
-        uv: bool,
-        write_events_to: Option<PathBuf>,
-    },
+    Start(StartRequest),
     WaitForSpawn {
         dataflow_id: Uuid,
     },
@@ -91,4 +102,41 @@ pub enum ControlRequest {
     },
     CliAndDefaultDaemonOnSameMachine,
     GetNodeInfo,
+}
+
+#[tarpc::service]
+pub trait CliControl {
+    async fn build(request: BuildRequest) -> eyre::Result<BuildId>;
+    async fn wait_for_build(build_id: BuildId) -> eyre::Result<()>;
+    async fn start(request: StartRequest) -> eyre::Result<Uuid>;
+    async fn wait_for_spawn(dataflow_id: Uuid) -> eyre::Result<()>;
+    async fn reload(
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        operator_id: Option<OperatorId>,
+    ) -> eyre::Result<Uuid>;
+    async fn check(dataflow_uuid: Uuid) -> eyre::Result<ControlRequestReply>;
+    async fn stop(
+        dataflow_uuid: Uuid,
+        grace_duration: Option<Duration>,
+        force: bool,
+    ) -> eyre::Result<ControlRequestReply>;
+    async fn stop_by_name(
+        name: String,
+        grace_duration: Option<Duration>,
+        force: bool,
+    ) -> eyre::Result<ControlRequestReply>;
+    async fn logs(
+        uuid: Option<Uuid>,
+        name: Option<String>,
+        node: String,
+        tail: Option<usize>,
+    ) -> eyre::Result<Vec<u8>>;
+    async fn destroy() -> eyre::Result<()>;
+    async fn list() -> eyre::Result<DataflowList>;
+    async fn info(dataflow_uuid: Uuid) -> eyre::Result<DataflowInfo>;
+    async fn daemon_connected() -> eyre::Result<bool>;
+    async fn connected_machines() -> eyre::Result<BTreeSet<DaemonId>>;
+    async fn cli_and_default_daemon_on_same_machine() -> eyre::Result<CliAndDefaultDaemonIps>;
+    async fn get_node_info() -> eyre::Result<Vec<NodeInfo>>;
 }

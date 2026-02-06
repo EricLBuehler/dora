@@ -135,3 +135,16 @@ impl std::fmt::Display for DataflowIdAndName {
         }
     }
 }
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DataflowInfo {
+    pub uuid: Uuid,
+    pub name: Option<String>,
+    pub descriptor: Descriptor,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct CliAndDefaultDaemonIps {
+    pub default_daemon: Option<IpAddr>,
+    pub cli: Option<IpAddr>,
+}

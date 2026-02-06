@@ -3,6 +3,13 @@ use crate::{
     tcp_utils::{tcp_receive, tcp_send},
 };
 pub use control::ControlEvent;
+use dashmap::{
+    DashMap,
+    mapref::{
+        multiple::RefMutMulti,
+        one::{Ref, RefMut},
+    },
+};
 use dora_core::{
     config::{NodeId, OperatorId},
     descriptor::DescriptorExt,
@@ -10,12 +17,9 @@ use dora_core::{
 };
 use dora_message::{
     BuildId, DataflowId, SessionId,
-    cli_to_coordinator::ControlRequest,
-    common::{DaemonId, GitSource},
-    coordinator_to_cli::{
-        ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry, DataflowResult,
-        DataflowStatus, LogLevel, LogMessage,
-    },
+    cli_to_coordinator::{BuildRequest, ControlRequest},
+    common::DaemonId,
+    coordinator_to_cli::{ControlRequestReply, DataflowResult, LogLevel, LogMessage},
     coordinator_to_daemon::{
         BuildDataflowNodes, DaemonCoordinatorEvent, RegisterResult, Timestamped,
     },
@@ -23,11 +27,10 @@ use dora_message::{
     descriptor::{Descriptor, ResolvedNode},
 };
 use eyre::{ContextCompat, Result, WrapErr, bail, eyre};
-use futures::{Future, Stream, StreamExt, future::join_all, stream::FuturesUnordered};
+use futures::{Future, Stream, StreamExt, stream::FuturesUnordered};
 use futures_concurrency::stream::Merge;
 use itertools::Itertools;
 use log_subscriber::LogSubscriber;
-use petname::petname;
 use run::SpawnedDataflow;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -48,6 +51,8 @@ mod control;
 mod listener;
 mod log_subscriber;
 mod run;
+mod server;
+mod state;
 mod tcp_utils;
 
 pub async fn start(
@@ -100,20 +105,18 @@ pub async fn start(
 // Resolve the dataflow name.
 fn resolve_name(
     name: String,
-    running_dataflows: &HashMap<Uuid, RunningDataflow>,
-    archived_dataflows: &HashMap<Uuid, ArchivedDataflow>,
+    running_dataflows: &DashMap<Uuid, RunningDataflow>,
+    archived_dataflows: &DashMap<Uuid, ArchivedDataflow>,
 ) -> eyre::Result<Uuid> {
     let uuids: Vec<_> = running_dataflows
         .iter()
-        .filter(|(_, v)| v.name.as_deref() == Some(name.as_str()))
-        .map(|(k, _)| k)
-        .copied()
+        .filter(|r| r.value().name.as_deref() == Some(name.as_str()))
+        .map(|r| *r.key())
         .collect();
     let archived_uuids: Vec<_> = archived_dataflows
         .iter()
-        .filter(|(_, v)| v.name.as_deref() == Some(name.as_str()))
-        .map(|(k, _)| k)
-        .copied()
+        .filter(|r| r.value().name.as_deref() == Some(name.as_str()))
+        .map(|r| *r.key())
         .collect();
 
     if uuids.is_empty() {
@@ -136,53 +139,59 @@ fn resolve_name(
 
 #[derive(Default)]
 struct DaemonConnections {
-    daemons: BTreeMap<DaemonId, DaemonConnection>,
+    daemons: DashMap<DaemonId, DaemonConnection>,
 }
 
 impl DaemonConnections {
-    fn add(&mut self, daemon_id: DaemonId, connection: DaemonConnection) {
+    fn add(&self, daemon_id: DaemonId, connection: DaemonConnection) {
         let previous = self.daemons.insert(daemon_id.clone(), connection);
         if previous.is_some() {
             tracing::info!("closing previous connection `{daemon_id}` on new register");
         }
     }
 
-    fn get(&self, id: &DaemonId) -> Option<&DaemonConnection> {
+    fn get(&self, id: &DaemonId) -> Option<Ref<'_, DaemonId, DaemonConnection>> {
         self.daemons.get(id)
     }
 
-    fn get_mut(&mut self, id: &DaemonId) -> Option<&mut DaemonConnection> {
+    fn get_mut(&self, id: &DaemonId) -> Option<RefMut<'_, DaemonId, DaemonConnection>> {
         self.daemons.get_mut(id)
     }
 
-    fn get_matching_daemon_id(&self, machine_id: &str) -> Option<&DaemonId> {
+    fn get_matching_daemon_id(&self, machine_id: &str) -> Option<DaemonId> {
         self.daemons
-            .keys()
-            .find(|id| id.matches_machine_id(machine_id))
+            .iter()
+            .find(|r| r.key().matches_machine_id(machine_id))
+            .map(|r| r.key().clone())
     }
 
-    fn drain(&mut self) -> impl Iterator<Item = (DaemonId, DaemonConnection)> {
-        std::mem::take(&mut self.daemons).into_iter()
+    fn clear(&self) {
+        self.daemons.clear();
     }
 
     fn is_empty(&self) -> bool {
         self.daemons.is_empty()
     }
 
-    fn keys(&self) -> impl Iterator<Item = &DaemonId> {
-        self.daemons.keys()
+    fn keys(&self) -> impl Iterator<Item = DaemonId> {
+        self.daemons.iter().map(|r| r.key().clone())
     }
 
-    fn iter_mut(&mut self) -> impl Iterator<Item = (&DaemonId, &mut DaemonConnection)> {
+    fn iter_mut(&self) -> impl Iterator<Item = RefMutMulti<DaemonId, DaemonConnection>> {
         self.daemons.iter_mut()
     }
 
-    fn remove(&mut self, daemon_id: &DaemonId) -> Option<DaemonConnection> {
-        self.daemons.remove(daemon_id)
+    fn remove(&self, daemon_id: &DaemonId) -> Option<DaemonConnection> {
+        self.daemons
+            .remove(daemon_id)
+            .map(|(_, connection)| connection)
     }
 
-    fn unnamed(&self) -> impl Iterator<Item = &DaemonId> {
-        self.daemons.keys().filter(|id| id.machine_id().is_none())
+    fn unnamed(&self) -> impl Iterator<Item = DaemonId> {
+        self.daemons
+            .iter()
+            .filter(|r| r.key().machine_id().is_none())
+            .map(|r| r.key().clone())
     }
 }
 
@@ -193,7 +202,6 @@ async fn start_inner(
     let clock = Arc::new(HLC::default());
 
     let (daemon_events_tx, daemon_events) = tokio::sync::mpsc::channel(2);
-    let mut daemon_events_tx = Some(daemon_events_tx);
     let daemon_events = ReceiverStream::new(daemon_events);
 
     let daemon_heartbeat_interval =
@@ -209,11 +217,22 @@ async fn start_inner(
     let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
     let mut finished_builds: HashMap<BuildId, CachedResult> = HashMap::new();
 
-    let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
-    let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
-        HashMap::new();
     let mut archived_dataflows: HashMap<DataflowId, ArchivedDataflow> = HashMap::new();
-    let mut daemon_connections = DaemonConnections::default();
+
+    // Shared state for ControlServer – populated with references to the
+    // same data the event loop owns.  This is a stepping-stone; a future
+    // refactor will move all local state into CoordinatorState directly.
+    let coordinator_state = Arc::new(state::CoordinatorState {
+        clock: clock.clone(),
+        running_builds: Default::default(),
+        finished_builds: Default::default(),
+        running_dataflows: Default::default(),
+        dataflow_results: Default::default(),
+        archived_dataflows: Default::default(),
+        daemon_connections: Default::default(),
+        daemon_events_tx,
+        abort_handle: abort_handle.clone(),
+    });
 
     while let Some(event) = events.next().await {
         // used below for measuring the event handling duration
@@ -224,10 +243,14 @@ async fn start_inner(
             tracing::trace!("Handling event {event:?}");
         }
         match event {
+            Event::Close => {
+                tracing::info!("Received Close event, shutting down coordinator");
+                break;
+            }
             Event::NewDaemonConnection(connection) => {
                 connection.set_nodelay(true)?;
-                let events_tx = daemon_events_tx.clone();
-                if let Some(events_tx) = events_tx {
+                let events_tx = coordinator_state.daemon_events_tx.clone();
+                if !events_tx.is_closed() {
                     let task = tokio::spawn(listener::handle_connection(
                         connection,
                         events_tx,
@@ -250,8 +273,10 @@ async fn start_inner(
                     version_check_result,
                 } => {
                     let existing = match &machine_id {
-                        Some(id) => daemon_connections.get_matching_daemon_id(id),
-                        None => daemon_connections.unnamed().next(),
+                        Some(id) => coordinator_state
+                            .daemon_connections
+                            .get_matching_daemon_id(id),
+                        None => coordinator_state.daemon_connections.unnamed().next(),
                     };
                     let existing_result = if existing.is_some() {
                         Err(format!(
@@ -279,7 +304,7 @@ async fn start_inner(
                         .context("tcp send failed");
                     match version_check_result.map_err(|e| eyre!(e)).and(send_result) {
                         Ok(()) => {
-                            daemon_connections.add(
+                            coordinator_state.daemon_connections.add(
                                 daemon_id.clone(),
                                 DaemonConnection {
                                     stream: connection,
@@ -300,8 +325,8 @@ async fn start_inner(
                     daemon_id,
                     exited_before_subscribe,
                 } => {
-                    match running_dataflows.entry(uuid) {
-                        std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    match coordinator_state.running_dataflows.entry(uuid) {
+                        dashmap::Entry::Occupied(mut entry) => {
                             let dataflow = entry.get_mut();
                             dataflow.pending_daemons.remove(&daemon_id);
                             dataflow
@@ -322,7 +347,8 @@ async fn start_inner(
 
                                 // notify all machines that run parts of the dataflow
                                 for daemon_id in &dataflow.daemons {
-                                    let Some(connection) = daemon_connections.get_mut(daemon_id)
+                                    let Some(mut connection) =
+                                        coordinator_state.daemon_connections.get_mut(daemon_id)
                                     else {
                                         tracing::warn!(
                                             "no daemon connection found for machine `{daemon_id}`"
@@ -340,7 +366,7 @@ async fn start_inner(
                                 }
                             }
                         }
-                        std::collections::hash_map::Entry::Vacant(_) => {
+                        dashmap::Entry::Vacant(_) => {
                             tracing::warn!("dataflow not running on ReadyOnMachine");
                         }
                     }
@@ -349,15 +375,16 @@ async fn start_inner(
                     tracing::debug!(
                         "coordinator received DataflowFinishedOnDaemon ({daemon_id:?}, result: {result:?})"
                     );
-                    match running_dataflows.entry(uuid) {
-                        std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    match coordinator_state.running_dataflows.entry(uuid) {
+                        dashmap::Entry::Occupied(mut entry) => {
                             let dataflow = entry.get_mut();
                             dataflow.daemons.remove(&daemon_id);
                             tracing::info!(
                                 "removed machine id: {daemon_id} from dataflow: {:#?}",
                                 dataflow.uuid
                             );
-                            dataflow_results
+                            coordinator_state
+                                .dataflow_results
                                 .entry(uuid)
                                 .or_default()
                                 .insert(daemon_id, result);
@@ -394,9 +421,10 @@ async fn start_inner(
 
                                 let reply = ControlRequestReply::DataflowStopped {
                                     uuid,
-                                    result: dataflow_results
+                                    result: coordinator_state
+                                        .dataflow_results
                                         .get(&uuid)
-                                        .map(|r| dataflow_result(r, uuid, &clock))
+                                        .map(|r| dataflow_result(r.value(), uuid, &clock))
                                         .unwrap_or_else(|| {
                                             DataflowResult::ok_empty(uuid, clock.new_timestamp())
                                         }),
@@ -412,7 +440,7 @@ async fn start_inner(
                                 }
                             }
                         }
-                        std::collections::hash_map::Entry::Vacant(_) => {
+                        dashmap::Entry::Vacant(_) => {
                             tracing::warn!("dataflow not running on DataflowFinishedOnDaemon");
                         }
                     }
@@ -424,42 +452,10 @@ async fn start_inner(
                     request,
                     reply_sender,
                 } => {
+                    // Requests that need the raw reply_sender (deferred
+                    // replies or mutable access to local state) are handled
+                    // inline. Everything else is delegated to ControlServer.
                     match request {
-                        ControlRequest::Build {
-                            session_id,
-                            dataflow,
-                            git_sources,
-                            prev_git_sources,
-                            local_working_dir,
-                            uv,
-                        } => {
-                            // assign a random build id
-                            let build_id = BuildId::generate();
-
-                            let result = build_dataflow(
-                                build_id,
-                                session_id,
-                                dataflow,
-                                git_sources,
-                                prev_git_sources,
-                                local_working_dir,
-                                &clock,
-                                uv,
-                                &mut daemon_connections,
-                            )
-                            .await;
-                            match result {
-                                Ok(build) => {
-                                    running_builds.insert(build_id, build);
-                                    let _ = reply_sender.send(Ok(
-                                        ControlRequestReply::DataflowBuildTriggered { build_id },
-                                    ));
-                                }
-                                Err(err) => {
-                                    let _ = reply_sender.send(Err(err));
-                                }
-                            }
-                        }
                         ControlRequest::WaitForBuild { build_id } => {
                             if let Some(build) = running_builds.get_mut(&build_id) {
                                 build.build_result.register(reply_sender);
@@ -470,118 +466,27 @@ async fn start_inner(
                                     reply_sender.send(Err(eyre!("unknown build id {build_id}")));
                             }
                         }
-                        ControlRequest::Start {
-                            build_id,
-                            session_id,
-                            dataflow,
-                            name,
-                            local_working_dir,
-                            uv,
-                            write_events_to,
-                        } => {
-                            let name = name.or_else(|| petname(2, "-"));
-
-                            let inner = async {
-                                if let Some(name) = name.as_deref() {
-                                    // check that name is unique
-                                    if running_dataflows
-                                        .values()
-                                        .any(|d: &RunningDataflow| d.name.as_deref() == Some(name))
-                                    {
-                                        bail!(
-                                            "there is already a running dataflow with name `{name}`"
-                                        );
-                                    }
-                                }
-                                let dataflow = start_dataflow(
-                                    build_id,
-                                    session_id,
-                                    dataflow,
-                                    local_working_dir,
-                                    name,
-                                    &mut daemon_connections,
-                                    &clock,
-                                    uv,
-                                    write_events_to,
-                                )
-                                .await?;
-                                Ok(dataflow)
-                            };
-                            match inner.await {
-                                Ok(dataflow) => {
-                                    let uuid = dataflow.uuid;
-                                    running_dataflows.insert(uuid, dataflow);
-                                    let _ = reply_sender.send(Ok(
-                                        ControlRequestReply::DataflowStartTriggered { uuid },
-                                    ));
-                                }
-                                Err(err) => {
-                                    let _ = reply_sender.send(Err(err));
-                                }
-                            }
-                        }
                         ControlRequest::WaitForSpawn { dataflow_id } => {
-                            if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
+                            if let Some(mut dataflow) =
+                                coordinator_state.running_dataflows.get_mut(&dataflow_id)
+                            {
                                 dataflow.spawn_result.register(reply_sender);
                             } else {
                                 let _ =
                                     reply_sender.send(Err(eyre!("unknown dataflow {dataflow_id}")));
                             }
                         }
-                        ControlRequest::Check { dataflow_uuid } => {
-                            let status = match &running_dataflows.get(&dataflow_uuid) {
-                                Some(_) => ControlRequestReply::DataflowSpawned {
-                                    uuid: dataflow_uuid,
-                                },
-                                None => ControlRequestReply::DataflowStopped {
-                                    uuid: dataflow_uuid,
-                                    result: dataflow_results
-                                        .get(&dataflow_uuid)
-                                        .map(|r| dataflow_result(r, dataflow_uuid, &clock))
-                                        .unwrap_or_else(|| {
-                                            DataflowResult::ok_empty(
-                                                dataflow_uuid,
-                                                clock.new_timestamp(),
-                                            )
-                                        }),
-                                },
-                            };
-                            let _ = reply_sender.send(Ok(status));
-                        }
-                        ControlRequest::Reload {
-                            dataflow_id,
-                            node_id,
-                            operator_id,
-                        } => {
-                            let reload = async {
-                                reload_dataflow(
-                                    &running_dataflows,
-                                    dataflow_id,
-                                    node_id,
-                                    operator_id,
-                                    &mut daemon_connections,
-                                    clock.new_timestamp(),
-                                )
-                                .await?;
-                                Result::<_, eyre::Report>::Ok(())
-                            };
-                            let reply =
-                                reload
-                                    .await
-                                    .map(|()| ControlRequestReply::DataflowReloaded {
-                                        uuid: dataflow_id,
-                                    });
-                            let _ = reply_sender.send(reply);
-                        }
                         ControlRequest::Stop {
                             dataflow_uuid,
                             grace_duration,
                             force,
                         } => {
-                            if let Some(result) = dataflow_results.get(&dataflow_uuid) {
+                            if let Some(result) =
+                                coordinator_state.dataflow_results.get(&dataflow_uuid)
+                            {
                                 let reply = ControlRequestReply::DataflowStopped {
                                     uuid: dataflow_uuid,
-                                    result: dataflow_result(result, dataflow_uuid, &clock),
+                                    result: dataflow_result(result.value(), dataflow_uuid, &clock),
                                 };
                                 let _ = reply_sender.send(Ok(reply));
 
@@ -589,9 +494,9 @@ async fn start_inner(
                             }
 
                             let dataflow = stop_dataflow(
-                                &mut running_dataflows,
+                                &coordinator_state.running_dataflows,
                                 dataflow_uuid,
-                                &mut daemon_connections,
+                                &coordinator_state.daemon_connections,
                                 clock.new_timestamp(),
                                 grace_duration,
                                 force,
@@ -599,7 +504,7 @@ async fn start_inner(
                             .await;
 
                             match dataflow {
-                                Ok(dataflow) => {
+                                Ok(mut dataflow) => {
                                     dataflow.stop_reply_senders.push(reply_sender);
                                 }
                                 Err(err) => {
@@ -611,12 +516,22 @@ async fn start_inner(
                             name,
                             grace_duration,
                             force,
-                        } => match resolve_name(name, &running_dataflows, &archived_dataflows) {
+                        } => match resolve_name(
+                            name,
+                            &coordinator_state.running_dataflows,
+                            &coordinator_state.archived_dataflows,
+                        ) {
                             Ok(dataflow_uuid) => {
-                                if let Some(result) = dataflow_results.get(&dataflow_uuid) {
+                                if let Some(result) =
+                                    coordinator_state.dataflow_results.get(&dataflow_uuid)
+                                {
                                     let reply = ControlRequestReply::DataflowStopped {
                                         uuid: dataflow_uuid,
-                                        result: dataflow_result(result, dataflow_uuid, &clock),
+                                        result: dataflow_result(
+                                            result.value(),
+                                            dataflow_uuid,
+                                            &clock,
+                                        ),
                                     };
                                     let _ = reply_sender.send(Ok(reply));
 
@@ -624,9 +539,9 @@ async fn start_inner(
                                 }
 
                                 let dataflow = stop_dataflow(
-                                    &mut running_dataflows,
+                                    &coordinator_state.running_dataflows,
                                     dataflow_uuid,
-                                    &mut daemon_connections,
+                                    &coordinator_state.daemon_connections,
                                     clock.new_timestamp(),
                                     grace_duration,
                                     force,
@@ -634,7 +549,7 @@ async fn start_inner(
                                 .await;
 
                                 match dataflow {
-                                    Ok(dataflow) => {
+                                    Ok(mut dataflow) => {
                                         dataflow.stop_reply_senders.push(reply_sender);
                                     }
                                     Err(err) => {
@@ -646,169 +561,14 @@ async fn start_inner(
                                 let _ = reply_sender.send(Err(err));
                             }
                         },
-                        ControlRequest::Logs {
-                            uuid,
-                            name,
-                            node,
-                            tail,
-                        } => {
-                            let dataflow_uuid = if let Some(uuid) = uuid {
-                                Ok(uuid)
-                            } else if let Some(name) = name {
-                                resolve_name(name, &running_dataflows, &archived_dataflows)
-                            } else {
-                                Err(eyre!("No uuid"))
+                        // All other requests are dispatched via ControlServer.
+                        request => {
+                            let control_server = server::ControlServer {
+                                state: coordinator_state.clone(),
                             };
-
-                            match dataflow_uuid {
-                                Ok(uuid) => {
-                                    let reply = retrieve_logs(
-                                        &running_dataflows,
-                                        &archived_dataflows,
-                                        uuid,
-                                        node.into(),
-                                        &mut daemon_connections,
-                                        clock.new_timestamp(),
-                                        tail,
-                                    )
-                                    .await
-                                    .map(ControlRequestReply::Logs);
-                                    let _ = reply_sender.send(reply);
-                                }
-                                Err(err) => {
-                                    let _ = reply_sender.send(Err(err));
-                                }
-                            }
-                        }
-                        ControlRequest::Info { dataflow_uuid } => {
-                            if let Some(dataflow) = running_dataflows.get(&dataflow_uuid) {
-                                let _ = reply_sender.send(Ok(ControlRequestReply::DataflowInfo {
-                                    uuid: dataflow.uuid,
-                                    name: dataflow.name.clone(),
-                                    descriptor: dataflow.descriptor.clone(),
-                                }));
-                            } else {
-                                let _ = reply_sender.send(Err(eyre!(
-                                    "No running dataflow with uuid `{dataflow_uuid}`"
-                                )));
-                            }
-                        }
-                        ControlRequest::Destroy => {
-                            tracing::info!("Received destroy command");
-
-                            let reply = handle_destroy(
-                                &mut running_dataflows,
-                                &mut daemon_connections,
-                                &abort_handle,
-                                &mut daemon_events_tx,
-                                &clock,
-                            )
-                            .await
-                            .map(|()| ControlRequestReply::DestroyOk);
+                            let reply =
+                                server::handle_control_request(control_server, request).await;
                             let _ = reply_sender.send(reply);
-                        }
-                        ControlRequest::List => {
-                            let mut dataflows: Vec<_> = running_dataflows.values().collect();
-                            dataflows.sort_by_key(|d| (&d.name, d.uuid));
-
-                            let running = dataflows.into_iter().map(|d| DataflowListEntry {
-                                id: DataflowIdAndName {
-                                    uuid: d.uuid,
-                                    name: d.name.clone(),
-                                },
-                                status: DataflowStatus::Running,
-                            });
-                            let finished_failed =
-                                dataflow_results.iter().map(|(&uuid, results)| {
-                                    let name =
-                                        archived_dataflows.get(&uuid).and_then(|d| d.name.clone());
-                                    let id = DataflowIdAndName { uuid, name };
-                                    let status = if results.values().all(|r| r.is_ok()) {
-                                        DataflowStatus::Finished
-                                    } else {
-                                        DataflowStatus::Failed
-                                    };
-                                    DataflowListEntry { id, status }
-                                });
-
-                            let reply = Ok(ControlRequestReply::DataflowList(DataflowList(
-                                running.chain(finished_failed).collect(),
-                            )));
-                            let _ = reply_sender.send(reply);
-                        }
-                        ControlRequest::DaemonConnected => {
-                            let running = !daemon_connections.is_empty();
-                            let _ = reply_sender
-                                .send(Ok(ControlRequestReply::DaemonConnected(running)));
-                        }
-                        ControlRequest::ConnectedMachines => {
-                            let reply = Ok(ControlRequestReply::ConnectedDaemons(
-                                daemon_connections.keys().cloned().collect(),
-                            ));
-                            let _ = reply_sender.send(reply);
-                        }
-                        ControlRequest::LogSubscribe { .. } => {
-                            let _ = reply_sender.send(Err(eyre::eyre!(
-                                "LogSubscribe request should be handled separately"
-                            )));
-                        }
-                        ControlRequest::BuildLogSubscribe { .. } => {
-                            let _ = reply_sender.send(Err(eyre::eyre!(
-                                "BuildLogSubscribe request should be handled separately"
-                            )));
-                        }
-                        ControlRequest::CliAndDefaultDaemonOnSameMachine => {
-                            let mut default_daemon_ip = None;
-                            if let Some(default_id) = daemon_connections.unnamed().next() {
-                                if let Some(connection) = daemon_connections.get(default_id) {
-                                    if let Ok(addr) = connection.stream.peer_addr() {
-                                        default_daemon_ip = Some(addr.ip());
-                                    }
-                                }
-                            }
-                            let _ = reply_sender.send(Ok(
-                                ControlRequestReply::CliAndDefaultDaemonIps {
-                                    default_daemon: default_daemon_ip,
-                                    cli: None, // filled later
-                                },
-                            ));
-                        }
-                        ControlRequest::GetNodeInfo => {
-                            use dora_message::coordinator_to_cli::{NodeInfo, NodeMetricsInfo};
-
-                            let mut node_infos = Vec::new();
-                            for dataflow in running_dataflows.values() {
-                                for (node_id, _node) in &dataflow.nodes {
-                                    // Get the specific daemon this node is running on
-                                    if let Some(daemon_id) = dataflow.node_to_daemon.get(node_id) {
-                                        // Get metrics if available
-                                        let metrics = dataflow.node_metrics.get(node_id).map(|m| {
-                                            NodeMetricsInfo {
-                                                pid: m.pid,
-                                                cpu_usage: m.cpu_usage,
-                                                // Use 1000 for MB (megabytes) instead of 1024 (mebibytes)
-                                                memory_mb: m.memory_bytes as f64 / 1000.0 / 1000.0,
-                                                disk_read_mb_s: m
-                                                    .disk_read_bytes
-                                                    .map(|b| b as f64 / 1000.0 / 1000.0),
-                                                disk_write_mb_s: m
-                                                    .disk_write_bytes
-                                                    .map(|b| b as f64 / 1000.0 / 1000.0),
-                                            }
-                                        });
-
-                                        node_infos.push(NodeInfo {
-                                            dataflow_id: dataflow.uuid,
-                                            dataflow_name: dataflow.name.clone(),
-                                            node_id: node_id.clone(),
-                                            daemon_id: daemon_id.clone(),
-                                            metrics,
-                                        });
-                                    }
-                                }
-                            }
-                            let _ = reply_sender
-                                .send(Ok(ControlRequestReply::NodeInfoList(node_infos)));
                         }
                     }
                 }
@@ -818,7 +578,9 @@ async fn start_inner(
                     level,
                     connection,
                 } => {
-                    if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
+                    if let Some(mut dataflow) =
+                        coordinator_state.running_dataflows.get_mut(&dataflow_id)
+                    {
                         dataflow
                             .log_subscribers
                             .push(LogSubscriber::new(level, connection));
@@ -846,7 +608,9 @@ async fn start_inner(
             },
             Event::DaemonHeartbeatInterval => {
                 let mut disconnected = BTreeSet::new();
-                for (machine_id, connection) in daemon_connections.iter_mut() {
+                for mut connection_ref in coordinator_state.daemon_connections.iter_mut() {
+                    let machine_id = connection_ref.key().clone();
+                    let connection = connection_ref.value_mut();
                     if connection.last_heartbeat.elapsed() > Duration::from_secs(15) {
                         tracing::warn!(
                             "no heartbeat message from machine `{machine_id}` since {:?}",
@@ -875,31 +639,29 @@ async fn start_inner(
                 if !disconnected.is_empty() {
                     tracing::error!("Disconnecting daemons that failed watchdog: {disconnected:?}");
                     for machine_id in disconnected {
-                        daemon_connections.remove(&machine_id);
+                        coordinator_state.daemon_connections.remove(&machine_id);
                     }
                 }
             }
             Event::CtrlC => {
                 tracing::info!("Destroying coordinator after receiving Ctrl-C signal");
-                handle_destroy(
-                    &mut running_dataflows,
-                    &mut daemon_connections,
-                    &abort_handle,
-                    &mut daemon_events_tx,
-                    &clock,
-                )
-                .await?;
+                handle_destroy(&coordinator_state).await?;
             }
             Event::DaemonHeartbeat {
                 daemon_id: machine_id,
             } => {
-                if let Some(connection) = daemon_connections.get_mut(&machine_id) {
+                if let Some(mut connection_ref) =
+                    coordinator_state.daemon_connections.get_mut(&machine_id)
+                {
+                    let connection = connection_ref.value_mut();
                     connection.last_heartbeat = Instant::now();
                 }
             }
             Event::Log(message) => {
                 if let Some(dataflow_id) = &message.dataflow_id {
-                    if let Some(dataflow) = running_dataflows.get_mut(dataflow_id) {
+                    if let Some(mut dataflow) =
+                        coordinator_state.running_dataflows.get_mut(dataflow_id)
+                    {
                         if dataflow.log_subscribers.is_empty() {
                             // buffer log message until there are subscribers
                             dataflow.buffered_log_messages.push(message);
@@ -920,14 +682,16 @@ async fn start_inner(
             }
             Event::DaemonExit { daemon_id } => {
                 tracing::info!("Daemon `{daemon_id}` exited");
-                daemon_connections.remove(&daemon_id);
+                coordinator_state.daemon_connections.remove(&daemon_id);
             }
             Event::NodeMetrics {
                 dataflow_id,
                 metrics,
             } => {
                 // Store metrics for this dataflow
-                if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
+                if let Some(mut dataflow) =
+                    coordinator_state.running_dataflows.get_mut(&dataflow_id)
+                {
                     for (node_id, node_metrics) in metrics {
                         dataflow.node_metrics.insert(node_id, node_metrics);
                     }
@@ -972,8 +736,8 @@ async fn start_inner(
                 dataflow_id,
                 daemon_id,
                 result,
-            } => match running_dataflows.get_mut(&dataflow_id) {
-                Some(dataflow) => {
+            } => match coordinator_state.running_dataflows.get_mut(&dataflow_id) {
+                Some(mut dataflow) => {
                     dataflow.pending_spawn_results.remove(&daemon_id);
                     match result {
                         Ok(()) => {
@@ -1051,27 +815,33 @@ struct DaemonConnection {
 }
 
 async fn handle_destroy(
-    running_dataflows: &mut HashMap<Uuid, RunningDataflow>,
-    daemon_connections: &mut DaemonConnections,
-    abortable_events: &futures::stream::AbortHandle,
-    daemon_events_tx: &mut Option<mpsc::Sender<Event>>,
-    clock: &HLC,
+    coordinator_state: &state::CoordinatorState,
 ) -> Result<(), eyre::ErrReport> {
-    abortable_events.abort();
-    for dataflow_uuid in running_dataflows.keys().cloned().collect::<Vec<_>>() {
+    coordinator_state.abort_handle.abort();
+    for dataflow_uuid in coordinator_state
+        .running_dataflows
+        .iter()
+        .map(|entry| *entry.key())
+        .collect::<Vec<_>>()
+    {
         let _ = stop_dataflow(
-            running_dataflows,
+            &coordinator_state.running_dataflows,
             dataflow_uuid,
-            daemon_connections,
-            clock.new_timestamp(),
+            &coordinator_state.daemon_connections,
+            coordinator_state.clock.new_timestamp(),
             None,
             false,
         )
         .await?;
     }
 
-    let result = destroy_daemons(daemon_connections, clock.new_timestamp()).await;
-    *daemon_events_tx = None;
+    let result = destroy_daemons(
+        &coordinator_state.daemon_connections,
+        coordinator_state.clock.new_timestamp(),
+    )
+    .await;
+
+    let _ = coordinator_state.daemon_events_tx.send(Event::Close).await;
     result
 }
 
@@ -1203,13 +973,13 @@ impl PartialEq for RunningDataflow {
 impl Eq for RunningDataflow {}
 
 async fn stop_dataflow<'a>(
-    running_dataflows: &'a mut HashMap<Uuid, RunningDataflow>,
+    running_dataflows: &'a DashMap<Uuid, RunningDataflow>,
     dataflow_uuid: Uuid,
-    daemon_connections: &mut DaemonConnections,
+    daemon_connections: &DaemonConnections,
     timestamp: uhlc::Timestamp,
     grace_duration: Option<Duration>,
     force: bool,
-) -> eyre::Result<&'a mut RunningDataflow> {
+) -> eyre::Result<RefMut<'a, Uuid, RunningDataflow>> {
     let Some(dataflow) = running_dataflows.get_mut(&dataflow_uuid) else {
         bail!("no known running dataflow found with UUID `{dataflow_uuid}`")
     };
@@ -1224,9 +994,10 @@ async fn stop_dataflow<'a>(
     })?;
 
     for daemon_id in &dataflow.daemons {
-        let daemon_connection = daemon_connections
+        let mut daemon_connection_ref = daemon_connections
             .get_mut(daemon_id)
             .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
+        let daemon_connection = daemon_connection_ref.value_mut();
         tcp_send(&mut daemon_connection.stream, &message)
             .await
             .wrap_err("failed to send stop message to daemon")?;
@@ -1251,11 +1022,11 @@ async fn stop_dataflow<'a>(
 }
 
 async fn reload_dataflow(
-    running_dataflows: &HashMap<Uuid, RunningDataflow>,
+    running_dataflows: &DashMap<Uuid, RunningDataflow>,
     dataflow_id: Uuid,
     node_id: NodeId,
     operator_id: Option<OperatorId>,
-    daemon_connections: &mut DaemonConnections,
+    daemon_connections: &DaemonConnections,
     timestamp: uhlc::Timestamp,
 ) -> eyre::Result<()> {
     let Some(dataflow) = running_dataflows.get(&dataflow_id) else {
@@ -1271,7 +1042,7 @@ async fn reload_dataflow(
     })?;
 
     for machine_id in &dataflow.daemons {
-        let daemon_connection = daemon_connections
+        let mut daemon_connection = daemon_connections
             .get_mut(machine_id)
             .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
         tcp_send(&mut daemon_connection.stream, &message)
@@ -1297,11 +1068,11 @@ async fn reload_dataflow(
 }
 
 async fn retrieve_logs(
-    running_dataflows: &HashMap<Uuid, RunningDataflow>,
-    archived_dataflows: &HashMap<Uuid, ArchivedDataflow>,
+    running_dataflows: &DashMap<Uuid, RunningDataflow>,
+    archived_dataflows: &DashMap<Uuid, ArchivedDataflow>,
     dataflow_id: Uuid,
     node_id: NodeId,
-    daemon_connections: &mut DaemonConnections,
+    daemon_connections: &DaemonConnections,
     timestamp: uhlc::Timestamp,
     tail: Option<usize>,
 ) -> eyre::Result<Vec<u8>> {
@@ -1352,9 +1123,10 @@ async fn retrieve_logs(
         [] => eyre::bail!("no matching daemon connections for machine ID `{machine_id:?}`"),
         _ => eyre::bail!("multiple matching daemon connections for machine ID `{machine_id:?}`"),
     };
-    let daemon_connection = daemon_connections
+    let mut daemon_connection_ref = daemon_connections
         .get_mut(&daemon_id)
         .wrap_err_with(|| format!("no daemon connection to `{daemon_id}`"))?;
+    let daemon_connection = daemon_connection_ref.value_mut();
     tcp_send(&mut daemon_connection.stream, &message)
         .await
         .wrap_err("failed to send logs message to daemon")?;
@@ -1374,19 +1146,22 @@ async fn retrieve_logs(
     reply_logs.map_err(|err| eyre!(err))
 }
 
-#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip(daemon_connections, clock))]
 async fn build_dataflow(
+    build_request: BuildRequest,
     build_id: BuildId,
-    session_id: SessionId,
-    dataflow: Descriptor,
-    git_sources: BTreeMap<NodeId, GitSource>,
-    prev_git_sources: BTreeMap<NodeId, GitSource>,
-    local_working_dir: Option<PathBuf>,
     clock: &HLC,
-    uv: bool,
-    daemon_connections: &mut DaemonConnections,
+    daemon_connections: &DaemonConnections,
 ) -> eyre::Result<RunningBuild> {
+    let BuildRequest {
+        session_id,
+        dataflow,
+        git_sources,
+        prev_git_sources,
+        local_working_dir,
+        uv,
+    } = build_request;
+
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
 
     let mut git_sources_by_daemon = git_sources
@@ -1453,7 +1228,7 @@ async fn build_dataflow(
 }
 
 async fn build_dataflow_on_machine(
-    daemon_connections: &mut DaemonConnections,
+    daemon_connections: &DaemonConnections,
     machine: Option<&str>,
     message: &[u8],
 ) -> Result<DaemonId, eyre::ErrReport> {
@@ -1469,9 +1244,10 @@ async fn build_dataflow_on_machine(
             .clone(),
     };
 
-    let daemon_connection = daemon_connections
+    let mut daemon_connection_ref = daemon_connections
         .get_mut(&daemon_id)
         .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?;
+    let daemon_connection = daemon_connection_ref.value_mut();
     tcp_send(&mut daemon_connection.stream, message)
         .await
         .wrap_err("failed to send build message to daemon")?;
@@ -1497,7 +1273,7 @@ async fn start_dataflow(
     dataflow: Descriptor,
     local_working_dir: Option<PathBuf>,
     name: Option<String>,
-    daemon_connections: &mut DaemonConnections,
+    daemon_connections: &DaemonConnections,
     clock: &HLC,
     uv: bool,
     write_events_to: Option<PathBuf>,
@@ -1542,7 +1318,7 @@ async fn start_dataflow(
 
 async fn destroy_daemon(
     daemon_id: DaemonId,
-    mut daemon_connection: DaemonConnection,
+    daemon_connection: &mut DaemonConnection,
 
     timestamp: uhlc::Timestamp,
 ) -> Result<()> {
@@ -1575,17 +1351,18 @@ async fn destroy_daemon(
 }
 
 async fn destroy_daemons(
-    daemon_connections: &mut DaemonConnections,
+    daemon_connections: &DaemonConnections,
     timestamp: uhlc::Timestamp,
 ) -> eyre::Result<()> {
-    let futures = daemon_connections
-        .drain()
-        .map(|(daemon_id, daemon_connection)| {
-            destroy_daemon(daemon_id, daemon_connection, timestamp)
-        })
-        .collect::<Vec<_>>();
-    let results: Vec<std::result::Result<(), eyre::Error>> =
-        join_all(futures).await.into_iter().collect::<Vec<_>>();
+    let mut results = Vec::new();
+    for mut connection_ref in daemon_connections.iter_mut() {
+        let daemon_id = connection_ref.key().clone();
+        tracing::info!("Destroying daemon connection for `{daemon_id}`");
+        let result = destroy_daemon(daemon_id, connection_ref.value_mut(), timestamp).await;
+        results.push(result);
+    }
+    daemon_connections.clear();
+
     for result in results {
         result?;
     }
@@ -1625,6 +1402,7 @@ pub enum Event {
         dataflow_id: uuid::Uuid,
         metrics: BTreeMap<NodeId, dora_message::daemon_to_coordinator::NodeMetrics>,
     },
+    Close,
 }
 
 impl Event {
@@ -1652,6 +1430,7 @@ impl Event {
             Event::DataflowBuildResult { .. } => "DataflowBuildResult",
             Event::DataflowSpawnResult { .. } => "DataflowSpawnResult",
             Event::NodeMetrics { .. } => "NodeMetrics",
+            Event::Close => "Close",
         }
     }
 }
