@@ -3,17 +3,17 @@ use std::io::Write;
 use super::{Executable, default_tracing};
 use crate::{
     LOCALHOST,
-    common::{connect_to_coordinator, query_running_dataflows},
+    common::{block_on, connect_to_coordinator_rpc, query_running_dataflows},
     formatting::OutputFormat,
 };
 use clap::Args;
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, DataflowStatus},
+    cli_to_coordinator::CliControlClient,
+    coordinator_to_cli::DataflowStatus,
+    tarpc,
 };
-use eyre::{Context, bail, eyre};
+use eyre::{Context, eyre};
 use serde::Serialize;
 use tabwriter::TabWriter;
 use uuid::Uuid;
@@ -45,12 +45,12 @@ impl Executable for ListArgs {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let mut session =
-            connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-                .map_err(|_| eyre!("Failed to connect to coordinator"))?;
+        let rpc_port = self.coordinator_port + 1;
+        let client = connect_to_coordinator_rpc(self.coordinator_addr, rpc_port)
+            .map_err(|_| eyre!("Failed to connect to coordinator"))?;
 
         list(
-            &mut *session,
+            &client,
             self.format,
             self.status,
             self.name,
@@ -77,27 +77,18 @@ struct DataflowMetrics {
 }
 
 fn list(
-    session: &mut TcpRequestReplyConnection,
+    client: &CliControlClient,
     format: OutputFormat,
     status_filter: Option<String>,
     name_filter: Option<String>,
     sort_by: Option<String>,
 ) -> Result<(), eyre::ErrReport> {
-    let list = query_running_dataflows(session)?;
+    let list = query_running_dataflows(client)?;
 
-    // Get node information
-    let node_info_reply = session
-        .request(&serde_json::to_vec(&ControlRequest::GetNodeInfo).unwrap())
-        .wrap_err("failed to send GetNodeInfo request")?;
-
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&node_info_reply).wrap_err("failed to parse node info reply")?;
-
-    let node_infos = match reply {
-        ControlRequestReply::NodeInfoList(infos) => infos,
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected node info reply: {other:?}"),
-    };
+    // Get node information via tarpc
+    let node_infos = block_on(client.get_node_info(tarpc::context::current()))?
+        .context("RPC transport error")?
+        .map_err(|e| eyre::eyre!(e))?;
 
     // Aggregate metrics by dataflow UUID
     let mut dataflow_metrics: std::collections::BTreeMap<Uuid, DataflowMetrics> =

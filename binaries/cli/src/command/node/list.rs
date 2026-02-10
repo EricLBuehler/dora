@@ -7,15 +7,15 @@ use uuid::Uuid;
 
 use crate::{
     command::{Executable, default_tracing},
-    common::CoordinatorOptions,
+    common::{CoordinatorOptions, block_on},
     formatting::OutputFormat,
 };
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, NodeInfo},
+    cli_to_coordinator::CliControlClient,
+    coordinator_to_cli::NodeInfo,
+    tarpc,
 };
-use eyre::{Context, bail};
+use eyre::Context;
 
 /// List all currently running nodes and their status.
 ///
@@ -48,8 +48,8 @@ impl Executable for List {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let mut session = self.coordinator.connect()?;
-        list(session.as_mut(), self.dataflow, self.format)
+        let client = self.coordinator.connect_rpc()?;
+        list(&client, self.dataflow, self.format)
     }
 }
 
@@ -65,23 +65,14 @@ struct OutputEntry {
 }
 
 fn list(
-    session: &mut TcpRequestReplyConnection,
+    client: &CliControlClient,
     dataflow_filter: Option<String>,
     format: OutputFormat,
 ) -> eyre::Result<()> {
     // Request node information from coordinator
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::GetNodeInfo).unwrap())
-        .wrap_err("failed to send GetNodeInfo request")?;
-
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-    let node_infos = match reply {
-        ControlRequestReply::NodeInfoList(infos) => infos,
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected reply: {other:?}"),
-    };
+    let node_infos = block_on(client.get_node_info(tarpc::context::current()))?
+        .context("RPC transport error")?
+        .map_err(|e| eyre::eyre!(e))?;
 
     // Filter by dataflow if specified
     let filtered_nodes: Vec<NodeInfo> = if let Some(ref filter) = dataflow_filter {

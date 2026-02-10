@@ -5,17 +5,18 @@ use std::{
 
 use super::{Executable, default_tracing};
 use crate::{
-    common::{connect_to_coordinator, resolve_dataflow_identifier_interactive},
+    common::{block_on, connect_to_coordinator_rpc, resolve_dataflow_identifier_interactive},
     output::print_log_message,
 };
 use clap::Args;
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
+use communication_layer_request_reply::TcpConnection;
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::{
-    cli_to_coordinator::ControlRequest, common::LogMessage,
-    coordinator_to_cli::ControlRequestReply, id::NodeId,
+    cli_to_coordinator::{CliControlClient, ControlRequest},
+    common::LogMessage,
+    tarpc,
 };
-use eyre::{Context, Result, bail};
+use eyre::{Context, Result};
 use uuid::Uuid;
 
 #[derive(Debug, Args)]
@@ -26,7 +27,7 @@ pub struct LogsArgs {
     pub dataflow: Option<String>,
     /// Show logs for the given node
     #[clap(value_name = "NAME")]
-    pub node: NodeId,
+    pub node: dora_message::id::NodeId,
     /// Number of lines to show from the end of the logs
     #[clap(long, short = 'n')]
     pub tail: Option<usize>,
@@ -45,13 +46,13 @@ impl Executable for LogsArgs {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let mut session =
-            connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-                .wrap_err("failed to connect to dora coordinator")?;
+        let rpc_port = self.coordinator_port + 1;
+        let client = connect_to_coordinator_rpc(self.coordinator_addr, rpc_port)
+            .wrap_err("failed to connect to dora coordinator")?;
         let uuid =
-            resolve_dataflow_identifier_interactive(&mut *session, self.dataflow.as_deref())?;
+            resolve_dataflow_identifier_interactive(&client, self.dataflow.as_deref())?;
         logs(
-            &mut *session,
+            &client,
             uuid,
             self.node,
             self.tail,
@@ -62,32 +63,22 @@ impl Executable for LogsArgs {
 }
 
 pub fn logs(
-    session: &mut TcpRequestReplyConnection,
+    client: &CliControlClient,
     uuid: Uuid,
-    node: NodeId,
+    node: dora_message::id::NodeId,
     tail: Option<usize>,
     follow: bool,
     coordinator_addr: SocketAddr,
 ) -> Result<()> {
-    let logs = {
-        let reply_raw = session
-            .request(
-                &serde_json::to_vec(&ControlRequest::Logs {
-                    uuid: Some(uuid),
-                    name: None,
-                    node: node.to_string(),
-                    tail,
-                })
-                .wrap_err("")?,
-            )
-            .wrap_err("failed to send Logs request message")?;
-
-        let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-        match reply {
-            ControlRequestReply::Logs(data) => data,
-            other => bail!("unexpected reply to daemon logs: {other:?}"),
-        }
-    };
+    let logs = block_on(client.logs(
+        tarpc::context::current(),
+        Some(uuid),
+        None,
+        node.to_string(),
+        tail,
+    ))?
+    .context("RPC transport error")?
+    .map_err(|e| eyre::eyre!(e))?;
 
     std::io::stdout()
         .write_all(&logs)

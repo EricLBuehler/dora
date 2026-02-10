@@ -1,8 +1,10 @@
 use super::system::status::daemon_running;
 use super::{Executable, default_tracing};
-use crate::{LOCALHOST, common::connect_to_coordinator};
+use crate::{LOCALHOST, common::{block_on, connect_to_coordinator_rpc}};
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
+use dora_message::{
+    tarpc,
+};
 use eyre::{Context, ContextCompat, bail};
 use std::path::PathBuf;
 use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
@@ -27,15 +29,17 @@ struct UpConfig {}
 
 pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
-    let coordinator_addr = (LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
-    let mut session = match connect_to_coordinator(coordinator_addr) {
-        Ok(session) => session,
+    let coordinator_addr = LOCALHOST;
+    let control_port = DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
+    let rpc_port = control_port + 1;
+    let client = match connect_to_coordinator_rpc(coordinator_addr, rpc_port) {
+        Ok(client) => client,
         Err(_) => {
             start_coordinator().wrap_err("failed to start dora-coordinator")?;
 
             loop {
-                match connect_to_coordinator(coordinator_addr) {
-                    Ok(session) => break session,
+                match connect_to_coordinator_rpc(coordinator_addr, rpc_port) {
+                    Ok(client) => break client,
                     Err(_) => {
                         // sleep a bit until the coordinator accepts connections
                         std::thread::sleep(Duration::from_millis(50));
@@ -45,14 +49,14 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
         }
     };
 
-    if !daemon_running(&mut *session)? {
+    if !daemon_running(&client)? {
         start_daemon().wrap_err("failed to start dora-daemon")?;
 
         // wait a bit until daemon is connected
         let mut i = 0;
         const WAIT_S: f32 = 0.1;
         loop {
-            if daemon_running(&mut *session)? {
+            if daemon_running(&client)? {
                 break;
             }
             i += 1;
@@ -71,25 +75,13 @@ pub(crate) fn destroy(
     coordinator_addr: SocketAddr,
 ) -> Result<(), eyre::ErrReport> {
     let UpConfig {} = parse_dora_config(config_path)?;
-    match connect_to_coordinator(coordinator_addr) {
-        Ok(mut session) => {
-            // send destroy command to dora-coordinator
-            let reply_raw = session
-                .request(&serde_json::to_vec(&ControlRequest::Destroy).unwrap())
-                .wrap_err("failed to send destroy message")?;
-            let result: ControlRequestReply =
-                serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-            match result {
-                ControlRequestReply::DestroyOk => {
-                    println!("Coordinator and daemons destroyed successfully");
-                }
-                ControlRequestReply::Error(err) => {
-                    bail!("Destroy command failed with error: {}", err);
-                }
-                _ => {
-                    bail!("Unexpected reply from dora-coordinator");
-                }
-            }
+    let rpc_port = coordinator_addr.port() + 1;
+    match connect_to_coordinator_rpc(coordinator_addr.ip(), rpc_port) {
+        Ok(client) => {
+            block_on(client.destroy(tarpc::context::current()))?
+                .context("RPC transport error")?
+                .map_err(|e| eyre::eyre!(e))?;
+            println!("Coordinator and daemons destroyed successfully");
         }
         Err(_) => {
             bail!("Could not connect to dora-coordinator");

@@ -1,8 +1,9 @@
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
+use communication_layer_request_reply::TcpConnection;
 use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
-use dora_message::cli_to_coordinator::ControlRequest;
+use dora_message::cli_to_coordinator::{CliControlClient, ControlRequest};
 use dora_message::common::LogMessage;
 use dora_message::coordinator_to_cli::ControlRequestReply;
+use dora_message::tarpc;
 use eyre::Context;
 use notify::event::ModifyKind;
 use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -14,14 +15,14 @@ use std::{path::PathBuf, sync::mpsc, time::Duration};
 use tracing::{error, info};
 use uuid::Uuid;
 
-use crate::common::handle_dataflow_result;
+use crate::common::{block_on, handle_dataflow_result};
 use crate::output::print_log_message;
 
 pub fn attach_dataflow(
     dataflow: Descriptor,
     dataflow_path: PathBuf,
     dataflow_id: Uuid,
-    session: &mut TcpRequestReplyConnection,
+    client: &CliControlClient,
     hot_reload: bool,
     coordinator_socket: SocketAddr,
     log_level: log::LevelFilter,
@@ -174,11 +175,47 @@ pub fn attach_dataflow(
             }
         };
 
-        let reply_raw = session
-            .request(&serde_json::to_vec(&control_request)?)
-            .wrap_err("failed to send request message to coordinator")?;
-        let result: ControlRequestReply =
-            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+        let result: ControlRequestReply = match control_request {
+            ControlRequest::Check { dataflow_uuid } => {
+                block_on(client.check(tarpc::context::current(), dataflow_uuid))?
+                    .context("RPC transport error")?
+                    .map_err(|e| eyre::eyre!(e))?
+            }
+            ControlRequest::Stop {
+                dataflow_uuid,
+                grace_duration,
+                force,
+            } => {
+                block_on(client.stop(
+                    tarpc::context::current(),
+                    dataflow_uuid,
+                    grace_duration,
+                    force,
+                ))?
+                .context("RPC transport error")?
+                .map_err(|e| eyre::eyre!(e))?
+            }
+            ControlRequest::Reload {
+                dataflow_id,
+                node_id,
+                operator_id,
+            } => {
+                let uuid = block_on(client.reload(
+                    tarpc::context::current(),
+                    dataflow_id,
+                    node_id,
+                    operator_id,
+                ))?
+                .context("RPC transport error")?
+                .map_err(|e| eyre::eyre!(e))?;
+                ControlRequestReply::DataflowReloaded { uuid }
+            }
+            _ => {
+                error!("Unexpected control request in attach loop");
+                continue;
+            }
+        };
+
         match result {
             ControlRequestReply::DataflowSpawned { uuid: _ } => (),
             ControlRequestReply::DataflowStopped { uuid, result } => {

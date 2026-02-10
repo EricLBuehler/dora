@@ -1,22 +1,38 @@
 use crate::{LOCALHOST, formatting::FormatDataflowError};
-use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use dora_core::{
     descriptor::{Descriptor, source_is_url},
     topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
 };
 use dora_download::download_file;
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult},
+    cli_to_coordinator::CliControlClient,
+    coordinator_to_cli::{DataflowList, DataflowResult},
+    tarpc::{self, client, tokio_serde},
 };
 use eyre::{Context, ContextCompat, bail};
 use std::{
     env::current_dir,
-    net::{IpAddr, SocketAddr},
+    future::Future,
+    net::IpAddr,
     path::{Path, PathBuf},
 };
 use tokio::runtime::Builder;
 use uuid::Uuid;
+
+/// Run a future to completion, reusing the current tokio runtime if available,
+/// or creating a new single-threaded one.
+pub(crate) fn block_on<F: Future>(f: F) -> eyre::Result<F::Output> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => Ok(handle.block_on(f)),
+        Err(_) => {
+            let rt = Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("tokio runtime failed")?;
+            Ok(rt.block_on(f))
+        }
+    }
+}
 
 pub(crate) fn handle_dataflow_result(
     result: DataflowResult,
@@ -37,31 +53,23 @@ pub(crate) fn handle_dataflow_result(
 }
 
 pub(crate) fn query_running_dataflows(
-    session: &mut TcpRequestReplyConnection,
+    client: &CliControlClient,
 ) -> eyre::Result<DataflowList> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
-        .wrap_err("failed to send list message")?;
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    let ids = match reply {
-        ControlRequestReply::DataflowList(list) => list,
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected list dataflow reply: {other:?}"),
-    };
-
-    Ok(ids)
+    let list = block_on(client.list(tarpc::context::current()))?
+        .context("RPC transport error")?
+        .map_err(|e| eyre::eyre!(e))?;
+    Ok(list)
 }
 
 pub(crate) fn resolve_dataflow_identifier_interactive(
-    session: &mut TcpRequestReplyConnection,
+    client: &CliControlClient,
     name_or_uuid: Option<&str>,
 ) -> eyre::Result<Uuid> {
     if let Some(uuid) = name_or_uuid.and_then(|s| Uuid::parse_str(s).ok()) {
         return Ok(uuid);
     }
 
-    let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
+    let list = query_running_dataflows(client).wrap_err("failed to query running dataflows")?;
     let active: Vec<dora_message::coordinator_to_cli::DataflowIdAndName> = list.get_active();
     if let Some(name) = name_or_uuid {
         let Some(dataflow) = active.iter().find(|it| it.name.as_deref() == Some(name)) else {
@@ -91,17 +99,29 @@ pub(crate) struct CoordinatorOptions {
 }
 
 impl CoordinatorOptions {
-    pub fn connect(&self) -> eyre::Result<Box<TcpRequestReplyConnection>> {
-        let session = connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-            .wrap_err("failed to connect to dora coordinator")?;
-        Ok(session)
+    pub fn rpc_port(&self) -> u16 {
+        self.coordinator_port + 1
+    }
+
+    pub fn connect_rpc(&self) -> eyre::Result<CliControlClient> {
+        connect_to_coordinator_rpc(self.coordinator_addr, self.rpc_port())
     }
 }
 
-pub(crate) fn connect_to_coordinator(
-    coordinator_addr: SocketAddr,
-) -> std::io::Result<Box<TcpRequestReplyConnection>> {
-    TcpLayer::new().connect(coordinator_addr)
+/// Connect to the coordinator's tarpc RPC service.
+///
+/// The RPC port is conventionally `control_port + 1`.
+pub(crate) fn connect_to_coordinator_rpc(
+    addr: IpAddr,
+    rpc_port: u16,
+) -> eyre::Result<CliControlClient> {
+    let transport = block_on(tarpc::serde_transport::tcp::connect(
+        (addr, rpc_port),
+        tokio_serde::formats::Json::default,
+    ))?
+    .context("failed to connect tarpc client to coordinator")?;
+    let client = CliControlClient::new(client::Config::default(), transport).spawn();
+    Ok(client)
 }
 
 pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
@@ -123,14 +143,14 @@ pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
 pub(crate) fn local_working_dir(
     dataflow_path: &Path,
     dataflow_descriptor: &Descriptor,
-    coordinator_session: &mut TcpRequestReplyConnection,
+    client: &CliControlClient,
 ) -> eyre::Result<Option<PathBuf>> {
     Ok(
         if dataflow_descriptor
             .nodes
             .iter()
             .all(|n| n.deploy.as_ref().map(|d| d.machine.as_ref()).is_none())
-            && cli_and_daemon_on_same_machine(coordinator_session)?
+            && cli_and_daemon_on_same_machine(client)?
         {
             Some(
                 dunce::canonicalize(dataflow_path)
@@ -146,22 +166,13 @@ pub(crate) fn local_working_dir(
 }
 
 pub(crate) fn cli_and_daemon_on_same_machine(
-    session: &mut TcpRequestReplyConnection,
+    client: &CliControlClient,
 ) -> eyre::Result<bool> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::CliAndDefaultDaemonOnSameMachine).unwrap())
-        .wrap_err("failed to send start dataflow message")?;
+    let result = block_on(client.cli_and_default_daemon_on_same_machine(tarpc::context::current()))?
+        .context("RPC transport error")?
+        .map_err(|e| eyre::eyre!(e))?;
 
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::CliAndDefaultDaemonIps {
-            default_daemon,
-            cli,
-        } => Ok(default_daemon.is_some() && default_daemon == cli),
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    }
+    Ok(result.default_daemon.is_some() && result.default_daemon == result.cli)
 }
 
 pub(crate) fn write_events_to() -> Option<PathBuf> {

@@ -73,8 +73,8 @@ fn inspect(
     selector: TopicSelector,
     format: OutputFormat,
 ) -> eyre::Result<()> {
-    let mut session = coordinator.connect()?;
-    let (dataflow_id, topics) = selector.resolve(session.as_mut())?;
+    let client = coordinator.connect_rpc()?;
+    let (dataflow_id, topics) = selector.resolve(&client)?;
 
     let rt = Builder::new_multi_thread()
         .enable_all()

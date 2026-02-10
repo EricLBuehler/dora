@@ -1,64 +1,54 @@
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
+use communication_layer_request_reply::TcpConnection;
 use dora_core::descriptor::Descriptor;
 use dora_message::{
     BuildId,
-    cli_to_coordinator::{BuildRequest, ControlRequest},
+    cli_to_coordinator::{BuildRequest, CliControlClient, ControlRequest},
     common::{GitSource, LogMessage},
-    coordinator_to_cli::ControlRequestReply,
     id::NodeId,
+    tarpc,
 };
-use eyre::{Context, bail};
+use eyre::Context;
 use std::{
     collections::BTreeMap,
     net::{SocketAddr, TcpStream},
 };
 
-use crate::{output::print_log_message, session::DataflowSession};
+use crate::common::block_on;
+use crate::output::print_log_message;
+use crate::session::DataflowSession;
 
 pub fn build_distributed_dataflow(
-    session: &mut TcpRequestReplyConnection,
+    client: &CliControlClient,
     dataflow: Descriptor,
     git_sources: &BTreeMap<NodeId, GitSource>,
     dataflow_session: &DataflowSession,
     local_working_dir: Option<std::path::PathBuf>,
     uv: bool,
 ) -> eyre::Result<BuildId> {
-    let build_id = {
-        let reply_raw = session
-            .request(
-                &serde_json::to_vec(&ControlRequest::Build(BuildRequest {
-                    session_id: dataflow_session.session_id,
-                    dataflow,
-                    git_sources: git_sources.clone(),
-                    prev_git_sources: dataflow_session.git_sources.clone(),
-                    local_working_dir,
-                    uv,
-                }))
-                .unwrap(),
-            )
-            .wrap_err("failed to send start dataflow message")?;
-
-        let result: ControlRequestReply =
-            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-        match result {
-            ControlRequestReply::DataflowBuildTriggered { build_id } => {
-                eprintln!("dataflow build triggered: {build_id}");
-                build_id
-            }
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected start dataflow reply: {other:?}"),
-        }
-    };
+    let build_id = block_on(client.build(
+        tarpc::context::current(),
+        BuildRequest {
+            session_id: dataflow_session.session_id,
+            dataflow,
+            git_sources: git_sources.clone(),
+            prev_git_sources: dataflow_session.git_sources.clone(),
+            local_working_dir,
+            uv,
+        },
+    ))?
+    .context("RPC transport error")?
+    .map_err(|e| eyre::eyre!(e))?;
+    eprintln!("dataflow build triggered: {build_id}");
     Ok(build_id)
 }
 
 pub fn wait_until_dataflow_built(
     build_id: BuildId,
-    session: &mut TcpRequestReplyConnection,
+    client: &CliControlClient,
     coordinator_socket: SocketAddr,
     log_level: log::LevelFilter,
 ) -> eyre::Result<BuildId> {
-    // subscribe to log messages
+    // subscribe to build log messages (TCP streaming)
     let mut log_session = TcpConnection {
         stream: TcpStream::connect(coordinator_socket)
             .wrap_err("failed to connect to dora coordinator")?,
@@ -87,21 +77,9 @@ pub fn wait_until_dataflow_built(
         }
     });
 
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::WaitForBuild { build_id }).unwrap())
-        .wrap_err("failed to send WaitForBuild message")?;
-
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowBuildFinished { build_id, result } => match result {
-            Ok(()) => {
-                eprintln!("dataflow build finished successfully");
-                Ok(build_id)
-            }
-            Err(err) => bail!("{err}"),
-        },
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    }
+    block_on(client.wait_for_build(tarpc::context::current(), build_id))?
+        .context("RPC transport error")?
+        .map_err(|e| eyre::eyre!(e))?;
+    eprintln!("dataflow build finished successfully");
+    Ok(build_id)
 }

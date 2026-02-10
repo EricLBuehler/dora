@@ -1,11 +1,11 @@
 use crate::command::{Executable, default_tracing};
-use crate::{LOCALHOST, common::connect_to_coordinator};
-use communication_layer_request_reply::TcpRequestReplyConnection;
+use crate::{LOCALHOST, common::{block_on, connect_to_coordinator_rpc}};
 use dora_core::descriptor::DescriptorExt;
 use dora_core::{descriptor::Descriptor, topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT};
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, DataflowStatus},
+    cli_to_coordinator::CliControlClient,
+    coordinator_to_cli::DataflowStatus,
+    tarpc,
 };
 use eyre::{Context, bail};
 use std::{
@@ -25,9 +25,11 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     };
     let mut stdout = termcolor::StandardStream::stdout(color_choice);
 
+    let rpc_port = coordinator_addr.port() + 1;
+
     // Coordinator status
-    let mut session = match connect_to_coordinator(coordinator_addr) {
-        Ok(session) => {
+    let client = match connect_to_coordinator_rpc(coordinator_addr.ip(), rpc_port) {
+        Ok(client) => {
             let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
             write!(stdout, "✓ ")?;
             let _ = stdout.reset();
@@ -38,7 +40,7 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
                 coordinator_addr.ip(),
                 coordinator_addr.port()
             )?;
-            Some(session)
+            Some(client)
         }
         Err(_) => {
             let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
@@ -51,14 +53,14 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     };
 
     // Daemon status
-    let daemon_running = session.as_deref_mut().map(daemon_running).transpose()?;
+    let daemon_running_result = client.as_ref().map(daemon_running).transpose()?;
 
-    if daemon_running == Some(true) {
+    if daemon_running_result == Some(true) {
         let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
         write!(stdout, "✓ ")?;
         let _ = stdout.reset();
         writeln!(stdout, "Daemon: Running")?;
-    } else if session.is_some() {
+    } else if client.is_some() {
         let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
         write!(stdout, "✗ ")?;
         let _ = stdout.reset();
@@ -73,8 +75,8 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     }
 
     // Dataflow count
-    if let Some(ref mut sess) = session {
-        if let Ok(count) = query_running_dataflow_count(&mut **sess) {
+    if let Some(ref c) = client {
+        if let Ok(count) = query_running_dataflow_count(c) {
             writeln!(stdout, "Active dataflows: {}", count)?;
         }
     }
@@ -86,38 +88,24 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     Ok(())
 }
 
-pub fn daemon_running(session: &mut TcpRequestReplyConnection) -> Result<bool, eyre::ErrReport> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::DaemonConnected).unwrap())
-        .wrap_err("failed to send DaemonConnected message")?;
-
-    let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    let running = match reply {
-        ControlRequestReply::DaemonConnected(running) => running,
-        other => bail!("unexpected reply to daemon connection check: {other:?}"),
-    };
-
+pub fn daemon_running(client: &CliControlClient) -> Result<bool, eyre::ErrReport> {
+    let running = block_on(client.daemon_connected(tarpc::context::current()))?
+        .context("RPC transport error")?
+        .map_err(|e| eyre::eyre!(e))?;
     Ok(running)
 }
 
 fn query_running_dataflow_count(
-    session: &mut TcpRequestReplyConnection,
+    client: &CliControlClient,
 ) -> Result<usize, eyre::ErrReport> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
-        .wrap_err("failed to send List message")?;
-
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-    match reply {
-        ControlRequestReply::DataflowList(list) => Ok(list
-            .0
-            .iter()
-            .filter(|d| d.status == DataflowStatus::Running)
-            .count()),
-        other => bail!("unexpected reply to list request: {other:?}"),
-    }
+    let list = block_on(client.list(tarpc::context::current()))?
+        .context("RPC transport error")?
+        .map_err(|e| eyre::eyre!(e))?;
+    Ok(list
+        .0
+        .iter()
+        .filter(|d| d.status == DataflowStatus::Running)
+        .count())
 }
 
 #[derive(Debug, clap::Args)]

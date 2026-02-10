@@ -47,18 +47,17 @@
 //!       - random
 //! ```
 
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::{
     descriptor::{CoreNodeKind, CustomNode, Descriptor, DescriptorExt},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
-use dora_message::{BuildId, descriptor::NodeSource};
+use dora_message::{BuildId, cli_to_coordinator::CliControlClient, descriptor::NodeSource};
 use eyre::Context;
 use std::{collections::BTreeMap, net::IpAddr};
 
 use super::{Executable, default_tracing};
 use crate::{
-    common::{connect_to_coordinator, local_working_dir, resolve_dataflow},
+    common::{connect_to_coordinator_rpc, local_working_dir, resolve_dataflow},
     session::DataflowSession,
 };
 
@@ -131,7 +130,7 @@ pub fn build(
         }
     }
 
-    let session = || connect_to_coordinator_with_defaults(coordinator_addr, coordinator_port);
+    let session = || connect_to_coordinator_rpc_with_defaults(coordinator_addr, coordinator_port);
 
     let build_kind = if force_local {
         log::info!("Building locally, as requested through `--force-local`");
@@ -143,15 +142,15 @@ pub fn build(
         log::info!("Building through coordinator, using the given coordinator socket information");
         // explicit coordinator address or port set -> there should be a coordinator running
         BuildKind::ThroughCoordinator {
-            coordinator_session: session().context("failed to connect to coordinator")?,
+            coordinator_client: session().context("failed to connect to coordinator")?,
         }
     } else {
         match session() {
-            Ok(coordinator_session) => {
+            Ok(coordinator_client) => {
                 // we found a local coordinator instance at default port -> use it for building
                 log::info!("Found local dora coordinator instance -> building through coordinator");
                 BuildKind::ThroughCoordinator {
-                    coordinator_session,
+                    coordinator_client,
                 }
             }
             Err(_) => {
@@ -188,15 +187,15 @@ pub fn build(
                 .context("failed to write out dataflow session file")?;
         }
         BuildKind::ThroughCoordinator {
-            mut coordinator_session,
+            coordinator_client,
         } => {
             let local_working_dir = local_working_dir(
                 &dataflow_path,
                 &dataflow_descriptor,
-                &mut *coordinator_session,
+                &coordinator_client,
             )?;
             let build_id = build_distributed_dataflow(
-                &mut *coordinator_session,
+                &coordinator_client,
                 dataflow_descriptor,
                 &git_sources,
                 &dataflow_session,
@@ -213,7 +212,7 @@ pub fn build(
 
             wait_until_dataflow_built(
                 build_id,
-                &mut *coordinator_session,
+                &coordinator_client,
                 coordinator_socket(coordinator_addr, coordinator_port),
                 log::LevelFilter::Info,
             )?;
@@ -232,16 +231,18 @@ pub fn build(
 enum BuildKind {
     Local,
     ThroughCoordinator {
-        coordinator_session: Box<TcpRequestReplyConnection>,
+        coordinator_client: CliControlClient,
     },
 }
 
-fn connect_to_coordinator_with_defaults(
+fn connect_to_coordinator_rpc_with_defaults(
     coordinator_addr: Option<std::net::IpAddr>,
     coordinator_port: Option<u16>,
-) -> std::io::Result<Box<TcpRequestReplyConnection>> {
-    let coordinator_socket = coordinator_socket(coordinator_addr, coordinator_port);
-    connect_to_coordinator(coordinator_socket)
+) -> eyre::Result<CliControlClient> {
+    let addr = coordinator_addr.unwrap_or(LOCALHOST);
+    let control_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
+    let rpc_port = control_port + 1;
+    connect_to_coordinator_rpc(addr, rpc_port)
 }
 
 fn coordinator_socket(

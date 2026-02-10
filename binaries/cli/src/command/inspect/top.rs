@@ -11,11 +11,13 @@ use crossterm::{
 };
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, NodeInfo},
+    coordinator_to_cli::NodeInfo,
     id::NodeId,
+    tarpc,
 };
-use eyre::{Context, eyre};
+use eyre::Context;
+
+use crate::common::{block_on, connect_to_coordinator_rpc};
 use ratatui::{
     Frame, Terminal,
     backend::{Backend, CrosstermBackend},
@@ -25,7 +27,7 @@ use ratatui::{
 };
 use uuid::Uuid;
 
-use crate::{LOCALHOST, common::connect_to_coordinator};
+use crate::LOCALHOST;
 
 use super::super::{Executable, default_tracing};
 
@@ -258,28 +260,15 @@ fn run_app<B: Backend>(
     let mut last_update = Instant::now();
     let mut node_infos: Vec<NodeInfo> = Vec::new();
 
+    let rpc_port = coordinator_port + 1;
     // Reuse coordinator connection
-    let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
+    let client = connect_to_coordinator_rpc(coordinator_addr, rpc_port)
         .wrap_err("Failed to connect to coordinator")?;
 
     // Query node info once initially
-    let request = ControlRequest::GetNodeInfo;
-    let reply_raw = session
-        .request(&serde_json::to_vec(&request).unwrap())
-        .wrap_err("failed to send initial request to coordinator")?;
-
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-    node_infos = match reply {
-        ControlRequestReply::NodeInfoList(infos) => infos,
-        ControlRequestReply::Error(err) => {
-            return Err(eyre!("coordinator error: {err}"));
-        }
-        _ => {
-            return Err(eyre!("unexpected reply from coordinator"));
-        }
-    };
+    node_infos = block_on(client.get_node_info(tarpc::context::current()))?
+        .context("RPC transport error")?
+        .map_err(|e| eyre::eyre!(e))?;
 
     loop {
         terminal.draw(|f| ui(f, &mut app, refresh_duration))?;
@@ -325,25 +314,9 @@ fn run_app<B: Backend>(
         // Update data if refresh interval has passed
         if last_update.elapsed() >= refresh_duration {
             // Query node info every refresh interval to get updated metrics
-            let request = ControlRequest::GetNodeInfo;
-            let reply_raw = session
-                .request(&serde_json::to_vec(&request).unwrap())
-                .wrap_err("failed to send request to coordinator")?;
-
-            let reply: ControlRequestReply =
-                serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-            match reply {
-                ControlRequestReply::NodeInfoList(infos) => {
-                    node_infos = infos;
-                }
-                ControlRequestReply::Error(err) => {
-                    return Err(eyre!("coordinator error: {err}"));
-                }
-                _ => {
-                    return Err(eyre!("unexpected reply from coordinator"));
-                }
-            }
+            node_infos = block_on(client.get_node_info(tarpc::context::current()))?
+                .context("RPC transport error")?
+                .map_err(|e| eyre::eyre!(e))?;
 
             // Update stats with current node info
             app.update_stats(node_infos.clone());
