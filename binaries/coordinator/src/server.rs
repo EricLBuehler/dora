@@ -21,6 +21,7 @@ use crate::{
     start_dataflow, state::CoordinatorState, stop_dataflow,
 };
 
+#[derive(Clone)]
 pub(crate) struct ControlServer {
     pub(crate) state: Arc<CoordinatorState>,
 }
@@ -217,7 +218,7 @@ pub(crate) async fn handle_control_request(
 }
 
 impl CliControl for ControlServer {
-    async fn build(self, context: Context, request: BuildRequest) -> eyre::Result<BuildId> {
+    async fn build(self, context: Context, request: BuildRequest) -> Result<BuildId, String> {
         // assign a random build id
         let build_id = BuildId::generate();
 
@@ -233,11 +234,11 @@ impl CliControl for ControlServer {
                 self.state.running_builds.insert(build_id, build);
                 Ok(build_id)
             }
-            Err(err) => Err(err),
+            Err(err) => Err(format!("{err:?}")),
         }
     }
 
-    async fn wait_for_build(self, context: Context, build_id: BuildId) -> eyre::Result<()> {
+    async fn wait_for_build(self, context: Context, build_id: BuildId) -> Result<(), String> {
         if let Some(build) = self.state.running_builds.get_mut(&build_id) {
             // TODO: register a oneshot and await the result
             todo!("register reply sender and await build completion")
@@ -245,7 +246,7 @@ impl CliControl for ControlServer {
             // TODO: register a oneshot and await the result
             todo!("register reply sender and await cached result")
         } else {
-            Err(eyre!("unknown build id {build_id}"))
+            Err(format!("unknown build id {build_id}"))
         }
     }
 

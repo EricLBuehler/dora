@@ -1,5 +1,6 @@
 use crate::{
     run::spawn_dataflow,
+    server::ControlServer,
     tcp_utils::{tcp_receive, tcp_send},
 };
 pub use control::ControlEvent;
@@ -17,7 +18,7 @@ use dora_core::{
 };
 use dora_message::{
     BuildId, SessionId,
-    cli_to_coordinator::BuildRequest,
+    cli_to_coordinator::{BuildRequest, CliControl},
     common::DaemonId,
     coordinator_to_cli::{ControlRequestReply, DataflowResult, LogLevel, LogMessage},
     coordinator_to_daemon::{
@@ -25,9 +26,14 @@ use dora_message::{
     },
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
     descriptor::{Descriptor, ResolvedNode},
+    tarpc::{
+        self,
+        server::{BaseChannel, Channel, incoming::Incoming},
+        tokio_serde,
+    },
 };
 use eyre::{ContextCompat, Result, WrapErr, bail, eyre};
-use futures::{Future, Stream, StreamExt, stream::FuturesUnordered};
+use futures::{Future, Stream, StreamExt, future, stream::FuturesUnordered};
 use futures_concurrency::stream::Merge;
 use itertools::Itertools;
 use log_subscriber::LogSubscriber;
@@ -60,16 +66,16 @@ pub async fn start(
     bind_control: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
-    let listener = listener::create_listener(bind).await?;
-    let port = listener
-        .local_addr()
-        .wrap_err("failed to get local addr of listener")?
-        .port();
-    let new_daemon_connections = TcpListenerStream::new(listener).map(|c| {
-        c.map(Event::NewDaemonConnection)
-            .wrap_err("failed to open connection")
-            .unwrap_or_else(Event::DaemonConnectError)
-    });
+    // let listener = listener::create_listener(bind).await?;
+    // let port = listener
+    //     .local_addr()
+    //     .wrap_err("failed to get local addr of listener")?
+    //     .port();
+    // let new_daemon_connections = TcpListenerStream::new(listener).map(|c| {
+    //     c.map(Event::NewDaemonConnection)
+    //         .wrap_err("failed to open connection")
+    //         .unwrap_or_else(Event::DaemonConnectError)
+    // });
 
     let mut tasks = FuturesUnordered::new();
     let control_events = control::control_events(bind_control, &tasks)
@@ -81,14 +87,61 @@ pub async fn start(
 
     let events = (
         external_events,
-        new_daemon_connections,
+        // new_daemon_connections,
         control_events,
         ctrlc_events,
     )
         .merge();
 
+    let daemon_heartbeat_interval =
+        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
+            .map(|_| Event::DaemonHeartbeatInterval);
+
+    // events that should be aborted on `dora destroy`
+    let (abortable_events, abort_handle) =
+        futures::stream::abortable((events, daemon_heartbeat_interval).merge());
+
+    let listener = tarpc::serde_transport::tcp::listen(bind, tokio_serde::formats::Json::default)
+        .await
+        .wrap_err("failed to start tarpc server for control messages")?;
+
+    let port = listener.local_addr().port();
+
+    let (daemon_events_tx, daemon_events) = tokio::sync::mpsc::channel(2);
+    let coordinator_state = Arc::new(state::CoordinatorState {
+        clock: Arc::new(HLC::default()),
+        running_builds: Default::default(),
+        finished_builds: Default::default(),
+        running_dataflows: Default::default(),
+        dataflow_results: Default::default(),
+        archived_dataflows: Default::default(),
+        daemon_connections: Default::default(),
+        daemon_events_tx,
+        abort_handle,
+    });
+
+    let stream = listener
+        // ignore connect errors
+        .filter_map(|c| future::ready(c.ok()))
+        .map(BaseChannel::with_defaults)
+        // limit to 10 channels per IP
+        // .max_channels_per_key(10, |t| t.transport().peer_addr().ok().map(|a| a.ip()))
+        .map(|channel| {
+            let server = ControlServer {
+                state: coordinator_state.clone(),
+            };
+            channel.execute(server.serve()).for_each(|fut| async {
+                let _join_handle = tokio::spawn(fut);
+            })
+        });
+    tokio::spawn(async {
+        while let Some(fut) = stream.next().await {
+            () = fut.await;
+        }
+    });
+
     let future = async move {
-        start_inner(events, &tasks).await?;
+        start_inner(abortable_events, &tasks, daemon_events).await?;
 
         tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
         while let Some(join_result) = tasks.next().await {
@@ -198,21 +251,13 @@ impl DaemonConnections {
 async fn start_inner(
     events: impl Stream<Item = Event> + Unpin,
     tasks: &FuturesUnordered<JoinHandle<()>>,
+    daemon_events: tokio::sync::mpsc::Receiver<Event>,
 ) -> eyre::Result<()> {
     let clock = Arc::new(HLC::default());
 
-    let (daemon_events_tx, daemon_events) = tokio::sync::mpsc::channel(2);
     let daemon_events = ReceiverStream::new(daemon_events);
 
-    let daemon_heartbeat_interval =
-        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
-            .map(|_| Event::DaemonHeartbeatInterval);
-
-    // events that should be aborted on `dora destroy`
-    let (abortable_events, abort_handle) =
-        futures::stream::abortable((events, daemon_heartbeat_interval).merge());
-
-    let mut events = (abortable_events, daemon_events).merge();
+    let mut events = (events, daemon_events).merge();
 
     // Shared state for ControlServer – populated with references to the
     // same data the event loop owns.  This is a stepping-stone; a future
@@ -1255,8 +1300,6 @@ async fn destroy_daemons(
 
 #[derive(Debug)]
 pub enum Event {
-    NewDaemonConnection(TcpStream),
-    DaemonConnectError(eyre::Report),
     DaemonHeartbeat {
         daemon_id: DaemonId,
     },
@@ -1301,8 +1344,6 @@ impl Event {
 
     fn kind(&self) -> &'static str {
         match self {
-            Event::NewDaemonConnection(_) => "NewDaemonConnection",
-            Event::DaemonConnectError(_) => "DaemonConnectError",
             Event::DaemonHeartbeat { .. } => "DaemonHeartbeat",
             Event::Dataflow { .. } => "Dataflow",
             Event::Control(_) => "Control",

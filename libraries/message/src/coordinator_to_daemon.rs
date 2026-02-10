@@ -100,5 +100,5 @@ pub struct SpawnDataflowNodes {
 
 #[tarpc::service]
 pub trait CoordinatorToDaemon {
-    async fn build(request: BuildDataflowNodes) -> eyre::Result<()>;
+    async fn build(request: BuildDataflowNodes) -> Result<(), String>;
 }
