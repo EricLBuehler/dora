@@ -17,9 +17,8 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::{
-    CachedResult, RunningDataflow, build_dataflow, dataflow_result, handle_destroy,
-    reload_dataflow, resolve_name, retrieve_logs, start_dataflow, state::CoordinatorState,
-    stop_dataflow,
+    build_dataflow, dataflow_result, handle_destroy, reload_dataflow, resolve_name, retrieve_logs,
+    start_dataflow, state::CoordinatorState, stop_dataflow,
 };
 
 pub(crate) struct ControlServer {
@@ -28,90 +27,193 @@ pub(crate) struct ControlServer {
 
 /// Dispatch a `ControlRequest` to the corresponding `ControlServer` method.
 ///
-/// Some variants (`WaitForBuild`, `WaitForSpawn`, `Stop`, `StopByName`,
-/// `LogSubscribe`, `BuildLogSubscribe`) still need access to the reply_sender
-/// directly and are **not** handled here – the caller must deal with them
-/// before calling this function.
+/// The `reply_sender` is used to send the result back to the CLI. Some
+/// variants (`WaitForBuild`, `WaitForSpawn`, `Stop`, `StopByName`) register
+/// the sender for a deferred reply instead of responding immediately.
+///
+/// `LogSubscribe` and `BuildLogSubscribe` are intercepted earlier (in
+/// `control.rs`) and should never reach this function.
 pub(crate) async fn handle_control_request(
     server: ControlServer,
     request: ControlRequest,
-) -> eyre::Result<ControlRequestReply> {
+    reply_sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,
+) {
     let ctx = Context::current();
-    match request {
-        ControlRequest::Build(request) => {
-            let build_id = server.build(ctx, request).await?;
-            Ok(ControlRequestReply::DataflowBuildTriggered { build_id })
-        }
-        ControlRequest::Start(request) => {
-            let uuid = server.start(ctx, request).await?;
-            Ok(ControlRequestReply::DataflowStartTriggered { uuid })
-        }
+    let result = match request {
+        ControlRequest::Build(request) => server
+            .build(ctx, request)
+            .await
+            .map(|build_id| ControlRequestReply::DataflowBuildTriggered { build_id }),
+        ControlRequest::Start(request) => server
+            .start(ctx, request)
+            .await
+            .map(|uuid| ControlRequestReply::DataflowStartTriggered { uuid }),
         ControlRequest::Check { dataflow_uuid } => server.check(ctx, dataflow_uuid).await,
         ControlRequest::Reload {
             dataflow_id,
             node_id,
             operator_id,
-        } => {
-            let uuid = server
-                .reload(ctx, dataflow_id, node_id, operator_id)
-                .await?;
-            Ok(ControlRequestReply::DataflowReloaded { uuid })
-        }
+        } => server
+            .reload(ctx, dataflow_id, node_id, operator_id)
+            .await
+            .map(|uuid| ControlRequestReply::DataflowReloaded { uuid }),
         ControlRequest::Logs {
             uuid,
             name,
             node,
             tail,
-        } => {
-            let data = server.logs(ctx, uuid, name, node, tail).await?;
-            Ok(ControlRequestReply::Logs(data))
-        }
+        } => server
+            .logs(ctx, uuid, name, node, tail)
+            .await
+            .map(|data| ControlRequestReply::Logs(data)),
         ControlRequest::Info { dataflow_uuid } => {
-            let info = server.info(ctx, dataflow_uuid).await?;
-            Ok(ControlRequestReply::DataflowInfo {
-                uuid: info.uuid,
-                name: info.name,
-                descriptor: info.descriptor,
-            })
+            server
+                .info(ctx, dataflow_uuid)
+                .await
+                .map(|info| ControlRequestReply::DataflowInfo {
+                    uuid: info.uuid,
+                    name: info.name,
+                    descriptor: info.descriptor,
+                })
         }
-        ControlRequest::Destroy => {
-            server.destroy(ctx).await?;
-            Ok(ControlRequestReply::DestroyOk)
-        }
-        ControlRequest::List => {
-            let list = server.list(ctx).await?;
-            Ok(ControlRequestReply::DataflowList(list))
-        }
-        ControlRequest::DaemonConnected => {
-            let connected = server.daemon_connected(ctx).await?;
-            Ok(ControlRequestReply::DaemonConnected(connected))
-        }
-        ControlRequest::ConnectedMachines => {
-            let daemons = server.connected_machines(ctx).await?;
-            Ok(ControlRequestReply::ConnectedDaemons(daemons))
-        }
-        ControlRequest::CliAndDefaultDaemonOnSameMachine => {
-            let ips = server.cli_and_default_daemon_on_same_machine(ctx).await?;
-            Ok(ControlRequestReply::CliAndDefaultDaemonIps {
+        ControlRequest::Destroy => server
+            .destroy(ctx)
+            .await
+            .map(|()| ControlRequestReply::DestroyOk),
+        ControlRequest::List => server
+            .list(ctx)
+            .await
+            .map(|list| ControlRequestReply::DataflowList(list)),
+        ControlRequest::DaemonConnected => server
+            .daemon_connected(ctx)
+            .await
+            .map(|connected| ControlRequestReply::DaemonConnected(connected)),
+        ControlRequest::ConnectedMachines => server
+            .connected_machines(ctx)
+            .await
+            .map(|daemons| ControlRequestReply::ConnectedDaemons(daemons)),
+        ControlRequest::CliAndDefaultDaemonOnSameMachine => server
+            .cli_and_default_daemon_on_same_machine(ctx)
+            .await
+            .map(|ips| ControlRequestReply::CliAndDefaultDaemonIps {
                 default_daemon: ips.default_daemon,
                 cli: ips.cli,
-            })
+            }),
+        ControlRequest::GetNodeInfo => server
+            .get_node_info(ctx)
+            .await
+            .map(|infos| ControlRequestReply::NodeInfoList(infos)),
+
+        // --- Deferred-reply variants: register the reply_sender and return ---
+        ControlRequest::WaitForBuild { build_id } => {
+            if let Some(mut build) = server.state.running_builds.get_mut(&build_id) {
+                build.build_result.register(reply_sender);
+            } else if let Some(mut result) = server.state.finished_builds.get_mut(&build_id) {
+                result.register(reply_sender);
+            } else {
+                let _ = reply_sender.send(Err(eyre!("unknown build id {build_id}")));
+            }
+            return;
         }
-        ControlRequest::GetNodeInfo => {
-            let infos = server.get_node_info(ctx).await?;
-            Ok(ControlRequestReply::NodeInfoList(infos))
+        ControlRequest::WaitForSpawn { dataflow_id } => {
+            if let Some(mut dataflow) = server.state.running_dataflows.get_mut(&dataflow_id) {
+                dataflow.spawn_result.register(reply_sender);
+            } else {
+                let _ = reply_sender.send(Err(eyre!("unknown dataflow {dataflow_id}")));
+            }
+            return;
         }
-        // These are handled directly by the caller because they need
-        // the raw reply_sender or the TCP connection.
-        ControlRequest::WaitForBuild { .. }
-        | ControlRequest::WaitForSpawn { .. }
-        | ControlRequest::Stop { .. }
-        | ControlRequest::StopByName { .. }
-        | ControlRequest::LogSubscribe { .. }
-        | ControlRequest::BuildLogSubscribe { .. } => {
-            Err(eyre!("request {request:?} must be handled by the caller"))
+        ControlRequest::Stop {
+            dataflow_uuid,
+            grace_duration,
+            force,
+        } => {
+            if let Some(result) = server.state.dataflow_results.get(&dataflow_uuid) {
+                let reply = ControlRequestReply::DataflowStopped {
+                    uuid: dataflow_uuid,
+                    result: dataflow_result(result.value(), dataflow_uuid, &server.state.clock),
+                };
+                let _ = reply_sender.send(Ok(reply));
+                return;
+            }
+
+            let dataflow = stop_dataflow(
+                &server.state.running_dataflows,
+                dataflow_uuid,
+                &server.state.daemon_connections,
+                server.state.clock.new_timestamp(),
+                grace_duration,
+                force,
+            )
+            .await;
+
+            match dataflow {
+                Ok(mut dataflow) => {
+                    dataflow.stop_reply_senders.push(reply_sender);
+                }
+                Err(err) => {
+                    let _ = reply_sender.send(Err(err));
+                }
+            }
+            return;
         }
-    }
+        ControlRequest::StopByName {
+            name,
+            grace_duration,
+            force,
+        } => {
+            match resolve_name(
+                name,
+                &server.state.running_dataflows,
+                &server.state.archived_dataflows,
+            ) {
+                Ok(dataflow_uuid) => {
+                    if let Some(result) = server.state.dataflow_results.get(&dataflow_uuid) {
+                        let reply = ControlRequestReply::DataflowStopped {
+                            uuid: dataflow_uuid,
+                            result: dataflow_result(
+                                result.value(),
+                                dataflow_uuid,
+                                &server.state.clock,
+                            ),
+                        };
+                        let _ = reply_sender.send(Ok(reply));
+                        return;
+                    }
+
+                    let dataflow = stop_dataflow(
+                        &server.state.running_dataflows,
+                        dataflow_uuid,
+                        &server.state.daemon_connections,
+                        server.state.clock.new_timestamp(),
+                        grace_duration,
+                        force,
+                    )
+                    .await;
+
+                    match dataflow {
+                        Ok(mut dataflow) => {
+                            dataflow.stop_reply_senders.push(reply_sender);
+                        }
+                        Err(err) => {
+                            let _ = reply_sender.send(Err(err));
+                        }
+                    }
+                }
+                Err(err) => {
+                    let _ = reply_sender.send(Err(err));
+                }
+            }
+            return;
+        }
+
+        // LogSubscribe/BuildLogSubscribe are intercepted earlier in control.rs
+        // and should never reach here.
+        ControlRequest::LogSubscribe { .. } | ControlRequest::BuildLogSubscribe { .. } => Err(
+            eyre!("LogSubscribe/BuildLogSubscribe must be handled by the caller"),
+        ),
+    };
+    let _ = reply_sender.send(result);
 }
 
 impl CliControl for ControlServer {

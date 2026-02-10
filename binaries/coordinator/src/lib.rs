@@ -17,7 +17,7 @@ use dora_core::{
 };
 use dora_message::{
     BuildId, SessionId,
-    cli_to_coordinator::{BuildRequest, ControlRequest},
+    cli_to_coordinator::BuildRequest,
     common::DaemonId,
     coordinator_to_cli::{ControlRequestReply, DataflowResult, LogLevel, LogMessage},
     coordinator_to_daemon::{
@@ -448,129 +448,10 @@ async fn start_inner(
                     request,
                     reply_sender,
                 } => {
-                    // Requests that need the raw reply_sender (deferred
-                    // replies or mutable access to local state) are handled
-                    // inline. Everything else is delegated to ControlServer.
-                    match request {
-                        ControlRequest::WaitForBuild { build_id } => {
-                            if let Some(mut build) =
-                                coordinator_state.running_builds.get_mut(&build_id)
-                            {
-                                build.build_result.register(reply_sender);
-                            } else if let Some(mut result) =
-                                coordinator_state.finished_builds.get_mut(&build_id)
-                            {
-                                result.register(reply_sender);
-                            } else {
-                                let _ =
-                                    reply_sender.send(Err(eyre!("unknown build id {build_id}")));
-                            }
-                        }
-                        ControlRequest::WaitForSpawn { dataflow_id } => {
-                            if let Some(mut dataflow) =
-                                coordinator_state.running_dataflows.get_mut(&dataflow_id)
-                            {
-                                dataflow.spawn_result.register(reply_sender);
-                            } else {
-                                let _ =
-                                    reply_sender.send(Err(eyre!("unknown dataflow {dataflow_id}")));
-                            }
-                        }
-                        ControlRequest::Stop {
-                            dataflow_uuid,
-                            grace_duration,
-                            force,
-                        } => {
-                            if let Some(result) =
-                                coordinator_state.dataflow_results.get(&dataflow_uuid)
-                            {
-                                let reply = ControlRequestReply::DataflowStopped {
-                                    uuid: dataflow_uuid,
-                                    result: dataflow_result(result.value(), dataflow_uuid, &clock),
-                                };
-                                let _ = reply_sender.send(Ok(reply));
-
-                                continue;
-                            }
-
-                            let dataflow = stop_dataflow(
-                                &coordinator_state.running_dataflows,
-                                dataflow_uuid,
-                                &coordinator_state.daemon_connections,
-                                clock.new_timestamp(),
-                                grace_duration,
-                                force,
-                            )
-                            .await;
-
-                            match dataflow {
-                                Ok(mut dataflow) => {
-                                    dataflow.stop_reply_senders.push(reply_sender);
-                                }
-                                Err(err) => {
-                                    let _ = reply_sender.send(Err(err));
-                                }
-                            }
-                        }
-                        ControlRequest::StopByName {
-                            name,
-                            grace_duration,
-                            force,
-                        } => match resolve_name(
-                            name,
-                            &coordinator_state.running_dataflows,
-                            &coordinator_state.archived_dataflows,
-                        ) {
-                            Ok(dataflow_uuid) => {
-                                if let Some(result) =
-                                    coordinator_state.dataflow_results.get(&dataflow_uuid)
-                                {
-                                    let reply = ControlRequestReply::DataflowStopped {
-                                        uuid: dataflow_uuid,
-                                        result: dataflow_result(
-                                            result.value(),
-                                            dataflow_uuid,
-                                            &clock,
-                                        ),
-                                    };
-                                    let _ = reply_sender.send(Ok(reply));
-
-                                    continue;
-                                }
-
-                                let dataflow = stop_dataflow(
-                                    &coordinator_state.running_dataflows,
-                                    dataflow_uuid,
-                                    &coordinator_state.daemon_connections,
-                                    clock.new_timestamp(),
-                                    grace_duration,
-                                    force,
-                                )
-                                .await;
-
-                                match dataflow {
-                                    Ok(mut dataflow) => {
-                                        dataflow.stop_reply_senders.push(reply_sender);
-                                    }
-                                    Err(err) => {
-                                        let _ = reply_sender.send(Err(err));
-                                    }
-                                }
-                            }
-                            Err(err) => {
-                                let _ = reply_sender.send(Err(err));
-                            }
-                        },
-                        // All other requests are dispatched via ControlServer.
-                        request => {
-                            let control_server = server::ControlServer {
-                                state: coordinator_state.clone(),
-                            };
-                            let reply =
-                                server::handle_control_request(control_server, request).await;
-                            let _ = reply_sender.send(reply);
-                        }
-                    }
+                    let control_server = server::ControlServer {
+                        state: coordinator_state.clone(),
+                    };
+                    server::handle_control_request(control_server, request, reply_sender).await;
                 }
                 ControlEvent::Error(err) => tracing::error!("{err:?}"),
                 ControlEvent::LogSubscribe {
