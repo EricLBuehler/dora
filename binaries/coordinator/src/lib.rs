@@ -16,7 +16,7 @@ use dora_core::{
     uhlc::{self, HLC},
 };
 use dora_message::{
-    BuildId, DataflowId, SessionId,
+    BuildId, SessionId,
     cli_to_coordinator::{BuildRequest, ControlRequest},
     common::DaemonId,
     coordinator_to_cli::{ControlRequestReply, DataflowResult, LogLevel, LogMessage},
@@ -33,7 +33,7 @@ use itertools::Itertools;
 use log_subscriber::LogSubscriber;
 use run::SpawnedDataflow;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     net::SocketAddr,
     path::PathBuf,
     sync::Arc,
@@ -177,7 +177,7 @@ impl DaemonConnections {
         self.daemons.iter().map(|r| r.key().clone())
     }
 
-    fn iter_mut(&self) -> impl Iterator<Item = RefMutMulti<DaemonId, DaemonConnection>> {
+    fn iter_mut(&self) -> impl Iterator<Item = RefMutMulti<'_, DaemonId, DaemonConnection>> {
         self.daemons.iter_mut()
     }
 
@@ -214,11 +214,6 @@ async fn start_inner(
 
     let mut events = (abortable_events, daemon_events).merge();
 
-    let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
-    let mut finished_builds: HashMap<BuildId, CachedResult> = HashMap::new();
-
-    let mut archived_dataflows: HashMap<DataflowId, ArchivedDataflow> = HashMap::new();
-
     // Shared state for ControlServer – populated with references to the
     // same data the event loop owns.  This is a stepping-stone; a future
     // refactor will move all local state into CoordinatorState directly.
@@ -231,7 +226,7 @@ async fn start_inner(
         archived_dataflows: Default::default(),
         daemon_connections: Default::default(),
         daemon_events_tx,
-        abort_handle: abort_handle.clone(),
+        abort_handle,
     });
 
     while let Some(event) = events.next().await {
@@ -391,7 +386,8 @@ async fn start_inner(
 
                             if dataflow.daemons.is_empty() {
                                 // Archive finished dataflow
-                                archived_dataflows
+                                coordinator_state
+                                    .archived_dataflows
                                     .entry(uuid)
                                     .or_insert_with(|| ArchivedDataflow::from(entry.get()));
                                 let mut finished_dataflow = entry.remove();
@@ -457,9 +453,13 @@ async fn start_inner(
                     // inline. Everything else is delegated to ControlServer.
                     match request {
                         ControlRequest::WaitForBuild { build_id } => {
-                            if let Some(build) = running_builds.get_mut(&build_id) {
+                            if let Some(mut build) =
+                                coordinator_state.running_builds.get_mut(&build_id)
+                            {
                                 build.build_result.register(reply_sender);
-                            } else if let Some(result) = finished_builds.get_mut(&build_id) {
+                            } else if let Some(mut result) =
+                                coordinator_state.finished_builds.get_mut(&build_id)
+                            {
                                 result.register(reply_sender);
                             } else {
                                 let _ =
@@ -595,7 +595,7 @@ async fn start_inner(
                     level,
                     connection,
                 } => {
-                    if let Some(build) = running_builds.get_mut(&build_id) {
+                    if let Some(mut build) = coordinator_state.running_builds.get_mut(&build_id) {
                         build
                             .log_subscribers
                             .push(LogSubscriber::new(level, connection));
@@ -670,7 +670,7 @@ async fn start_inner(
                         }
                     }
                 } else if let Some(build_id) = &message.build_id {
-                    if let Some(build) = running_builds.get_mut(build_id) {
+                    if let Some(mut build) = coordinator_state.running_builds.get_mut(build_id) {
                         if build.log_subscribers.is_empty() {
                             // buffer log message until there are subscribers
                             build.buffered_log_messages.push(message);
@@ -701,8 +701,8 @@ async fn start_inner(
                 build_id,
                 daemon_id,
                 result,
-            } => match running_builds.get_mut(&build_id) {
-                Some(build) => {
+            } => match coordinator_state.running_builds.get_mut(&build_id) {
+                Some(mut build) => {
                     build.pending_build_results.remove(&daemon_id);
                     match result {
                         Ok(()) => {}
@@ -712,7 +712,8 @@ async fn start_inner(
                     };
                     if build.pending_build_results.is_empty() {
                         tracing::info!("dataflow build finished: `{build_id}`");
-                        let mut build = running_builds.remove(&build_id).unwrap();
+                        let (build_id, mut build) =
+                            coordinator_state.running_builds.remove(&build_id).unwrap();
                         let result = if build.errors.is_empty() {
                             Ok(())
                         } else {
@@ -723,7 +724,9 @@ async fn start_inner(
                             ControlRequestReply::DataflowBuildFinished { build_id, result },
                         ));
 
-                        finished_builds.insert(build_id, build.build_result);
+                        coordinator_state
+                            .finished_builds
+                            .insert(build_id, build.build_result);
                     }
                 }
                 None => {

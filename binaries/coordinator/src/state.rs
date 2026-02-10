@@ -1,16 +1,11 @@
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use dashmap::DashMap;
 use dora_core::uhlc::HLC;
 use dora_message::{
-    BuildId, DataflowId, common::DaemonId, coordinator_to_daemon::CoordinatorToDaemonClient,
-    daemon_to_coordinator::DataflowDaemonResult,
+    BuildId, DataflowId, common::DaemonId, daemon_to_coordinator::DataflowDaemonResult,
 };
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 use crate::{
     ArchivedDataflow, CachedResult, DaemonConnections, Event, RunningBuild, RunningDataflow,
