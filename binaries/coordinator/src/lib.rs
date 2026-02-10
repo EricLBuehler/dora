@@ -65,17 +65,19 @@ pub async fn start(
     bind: SocketAddr,
     bind_control: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
-) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
-    // let listener = listener::create_listener(bind).await?;
-    // let port = listener
-    //     .local_addr()
-    //     .wrap_err("failed to get local addr of listener")?
-    //     .port();
-    // let new_daemon_connections = TcpListenerStream::new(listener).map(|c| {
-    //     c.map(Event::NewDaemonConnection)
-    //         .wrap_err("failed to open connection")
-    //         .unwrap_or_else(Event::DaemonConnectError)
-    // });
+) -> Result<(u16, u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
+    use tokio_stream::wrappers::TcpListenerStream;
+
+    let daemon_listener = listener::create_listener(bind).await?;
+    let daemon_port = daemon_listener
+        .local_addr()
+        .wrap_err("failed to get local addr of daemon listener")?
+        .port();
+    let new_daemon_connections = TcpListenerStream::new(daemon_listener).map(|c| {
+        c.map(Event::NewDaemonConnection)
+            .wrap_err("failed to open connection")
+            .unwrap_or_else(Event::DaemonConnectError)
+    });
 
     let mut tasks = FuturesUnordered::new();
     let control_events = control::control_events(bind_control, &tasks)
@@ -87,7 +89,7 @@ pub async fn start(
 
     let events = (
         external_events,
-        // new_daemon_connections,
+        new_daemon_connections,
         control_events,
         ctrlc_events,
     )
@@ -101,11 +103,13 @@ pub async fn start(
     let (abortable_events, abort_handle) =
         futures::stream::abortable((events, daemon_heartbeat_interval).merge());
 
-    let listener = tarpc::serde_transport::tcp::listen(bind, tokio_serde::formats::Json::default)
+    // Bind the tarpc RPC server on the same interface
+    let rpc_bind = SocketAddr::new(bind.ip(), 53291);
+    let listener = tarpc::serde_transport::tcp::listen(rpc_bind, tokio_serde::formats::Json::default)
         .await
         .wrap_err("failed to start tarpc server for control messages")?;
 
-    let port = listener.local_addr().port();
+    let rpc_port = listener.local_addr().port();
 
     let (daemon_events_tx, daemon_events) = tokio::sync::mpsc::channel(2);
     let coordinator_state = Arc::new(state::CoordinatorState {
@@ -153,7 +157,7 @@ pub async fn start(
         tracing::debug!("all spawned tasks finished, exiting..");
         Ok(())
     };
-    Ok((port, future))
+    Ok((daemon_port, rpc_port, future))
 }
 
 // Resolve the dataflow name.

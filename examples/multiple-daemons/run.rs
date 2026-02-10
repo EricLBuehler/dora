@@ -45,28 +45,28 @@ async fn main() -> eyre::Result<()> {
         IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
         DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
     );
-    let (coordinator_port, coordinator) = dora_coordinator::start(
+    let (_daemon_port, rpc_port, coordinator) = dora_coordinator::start(
         coordinator_bind,
         coordinator_control_bind,
         ReceiverStream::new(coordinator_events_rx),
     )
     .await?;
 
-    tracing::info!("coordinator running on {coordinator_port}");
+    tracing::info!("coordinator running, rpc on {rpc_port}");
 
     let coordinator_addr = Ipv4Addr::LOCALHOST;
 
     // Connect a tarpc client to the coordinator's RPC service.
     let transport = tarpc::serde_transport::tcp::connect(
-        (coordinator_addr, coordinator_port),
+        (coordinator_addr, rpc_port),
         tokio_serde::formats::Json::default,
     )
     .await
     .context("failed to connect tarpc client to coordinator")?;
     let client = CliControlClient::new(client::Config::default(), transport).spawn();
 
-    let daemon_a = run_daemon(coordinator_addr.to_string(), "A");
-    let daemon_b = run_daemon(coordinator_addr.to_string(), "B");
+    let daemon_a = run_daemon(coordinator_addr.to_string(), "A", 9843);
+    let daemon_b = run_daemon(coordinator_addr.to_string(), "B", 9844);
 
     tracing::info!("Spawning coordinator and daemons");
     let mut tasks = JoinSet::new();
@@ -212,7 +212,11 @@ async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn run_daemon(coordinator: String, machine_id: &str) -> eyre::Result<()> {
+async fn run_daemon(
+    coordinator: String,
+    machine_id: &str,
+    local_listen_port: u16,
+) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
@@ -225,7 +229,7 @@ async fn run_daemon(coordinator: String, machine_id: &str) -> eyre::Result<()> {
         .arg("--coordinator-addr")
         .arg(coordinator)
         .arg("--local-listen-port")
-        .arg("9843"); // random port
+        .arg(local_listen_port.to_string());
     if !cmd.status().await?.success() {
         bail!("failed to run dataflow");
     };
