@@ -28,7 +28,7 @@ use dora_message::{
     descriptor::{Descriptor, ResolvedNode},
     tarpc::{
         self,
-        server::{BaseChannel, Channel, incoming::Incoming},
+        server::{BaseChannel, Channel},
         tokio_serde,
     },
 };
@@ -50,7 +50,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
 };
-use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
+use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 mod control;
@@ -120,28 +120,29 @@ pub async fn start(
         abort_handle,
     });
 
-    let stream = listener
+    let tarpc_state = coordinator_state.clone();
+    let mut stream = listener
         // ignore connect errors
         .filter_map(|c| future::ready(c.ok()))
         .map(BaseChannel::with_defaults)
         // limit to 10 channels per IP
         // .max_channels_per_key(10, |t| t.transport().peer_addr().ok().map(|a| a.ip()))
-        .map(|channel| {
+        .map(move |channel| {
             let server = ControlServer {
-                state: coordinator_state.clone(),
+                state: tarpc_state.clone(),
             };
             channel.execute(server.serve()).for_each(|fut| async {
                 let _join_handle = tokio::spawn(fut);
             })
         });
-    tokio::spawn(async {
+    tokio::spawn(async move {
         while let Some(fut) = stream.next().await {
             () = fut.await;
         }
     });
 
     let future = async move {
-        start_inner(abortable_events, &tasks, daemon_events).await?;
+        start_inner(abortable_events, &tasks, daemon_events, coordinator_state).await?;
 
         tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
         while let Some(join_result) = tasks.next().await {
@@ -252,27 +253,13 @@ async fn start_inner(
     events: impl Stream<Item = Event> + Unpin,
     tasks: &FuturesUnordered<JoinHandle<()>>,
     daemon_events: tokio::sync::mpsc::Receiver<Event>,
+    coordinator_state: Arc<state::CoordinatorState>,
 ) -> eyre::Result<()> {
-    let clock = Arc::new(HLC::default());
+    let clock = coordinator_state.clock.clone();
 
     let daemon_events = ReceiverStream::new(daemon_events);
 
     let mut events = (events, daemon_events).merge();
-
-    // Shared state for ControlServer – populated with references to the
-    // same data the event loop owns.  This is a stepping-stone; a future
-    // refactor will move all local state into CoordinatorState directly.
-    let coordinator_state = Arc::new(state::CoordinatorState {
-        clock: clock.clone(),
-        running_builds: Default::default(),
-        finished_builds: Default::default(),
-        running_dataflows: Default::default(),
-        dataflow_results: Default::default(),
-        archived_dataflows: Default::default(),
-        daemon_connections: Default::default(),
-        daemon_events_tx,
-        abort_handle,
-    });
 
     while let Some(event) = events.next().await {
         // used below for measuring the event handling duration
@@ -489,15 +476,6 @@ async fn start_inner(
             },
 
             Event::Control(event) => match event {
-                ControlEvent::IncomingRequest {
-                    request,
-                    reply_sender,
-                } => {
-                    let control_server = server::ControlServer {
-                        state: coordinator_state.clone(),
-                    };
-                    server::handle_control_request(control_server, request, reply_sender).await;
-                }
                 ControlEvent::Error(err) => tracing::error!("{err:?}"),
                 ControlEvent::LogSubscribe {
                     dataflow_id,
@@ -1300,6 +1278,8 @@ async fn destroy_daemons(
 
 #[derive(Debug)]
 pub enum Event {
+    NewDaemonConnection(TcpStream),
+    DaemonConnectError(eyre::Report),
     DaemonHeartbeat {
         daemon_id: DaemonId,
     },
@@ -1344,6 +1324,8 @@ impl Event {
 
     fn kind(&self) -> &'static str {
         match self {
+            Event::NewDaemonConnection(_) => "NewDaemonConnection",
+            Event::DaemonConnectError(_) => "DaemonConnectError",
             Event::DaemonHeartbeat { .. } => "DaemonHeartbeat",
             Event::Dataflow { .. } => "Dataflow",
             Event::Control(_) => "Control",

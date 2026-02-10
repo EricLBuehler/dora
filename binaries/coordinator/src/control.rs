@@ -15,7 +15,7 @@ use futures_concurrency::future::Race;
 use std::{io::ErrorKind, net::SocketAddr};
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{mpsc, oneshot},
+    sync::mpsc,
     task::JoinHandle,
 };
 use tokio_stream::wrappers::ReceiverStream;
@@ -81,7 +81,7 @@ async fn handle_requests(
     tx: mpsc::Sender<ControlEvent>,
     _finish_tx: mpsc::Sender<()>,
 ) {
-    let peer_addr = connection.peer_addr().ok();
+    let _peer_addr = connection.peer_addr().ok();
     loop {
         let next_request = tcp_receive(&mut connection).map(Either::Left);
         let coordinator_stopped = tx.closed().map(Either::Right);
@@ -128,19 +128,12 @@ async fn handle_requests(
             break;
         }
 
-        let mut result = match request {
-            Ok(request) => handle_request(request, &tx).await,
-            Err(err) => Err(err),
-        };
-
-        if let Ok(ControlRequestReply::CliAndDefaultDaemonIps { cli, .. }) = &mut result {
-            if cli.is_none() {
-                // fill cli IP address in reply
-                *cli = peer_addr.map(|s| s.ip());
-            }
-        }
-
-        let reply = result.unwrap_or_else(|err| ControlRequestReply::Error(format!("{err:?}")));
+        // All other control requests are handled via the tarpc service.
+        // If a non-subscribe request arrives on the legacy TCP channel,
+        // respond with an error.
+        let reply = ControlRequestReply::Error(
+            "this control request must be sent via the tarpc service".to_string(),
+        );
         let serialized: Vec<u8> =
             match serde_json::to_vec(&reply).wrap_err("failed to serialize ControlRequestReply") {
                 Ok(s) => s,
@@ -163,38 +156,11 @@ async fn handle_requests(
                 }
             },
         }
-
-        if matches!(reply, ControlRequestReply::CoordinatorStopped) {
-            break;
-        }
     }
-}
-
-async fn handle_request(
-    request: ControlRequest,
-    tx: &mpsc::Sender<ControlEvent>,
-) -> eyre::Result<ControlRequestReply> {
-    let (reply_tx, reply_rx) = oneshot::channel();
-    let event = ControlEvent::IncomingRequest {
-        request: request.clone(),
-        reply_sender: reply_tx,
-    };
-
-    if tx.send(event).await.is_err() {
-        return Ok(ControlRequestReply::CoordinatorStopped);
-    }
-
-    reply_rx
-        .await
-        .wrap_err_with(|| format!("no coordinator reply to {request:?}"))?
 }
 
 #[derive(Debug)]
 pub enum ControlEvent {
-    IncomingRequest {
-        request: ControlRequest,
-        reply_sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,
-    },
     LogSubscribe {
         dataflow_id: Uuid,
         level: log::LevelFilter,
