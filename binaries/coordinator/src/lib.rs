@@ -88,7 +88,9 @@ pub async fn start(
         // ignore connect errors
         .filter_map(|c| future::ready(c.ok()))
         .map(move |transport| serve_control_requests(transport, coordinator_state.clone()));
-    tokio::spawn(stream.for_each(|_| async {}));
+    tokio::spawn(stream.for_each(|handle_connection| async {
+        tokio::spawn(handle_connection);
+    }));
 
     Ok((daemon_port, future))
 }
