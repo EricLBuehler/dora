@@ -51,14 +51,6 @@ pub struct StartRequest {
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequest {
-    Build(BuildRequest),
-    WaitForBuild {
-        build_id: BuildId,
-    },
-    Start(StartRequest),
-    WaitForSpawn {
-        dataflow_id: Uuid,
-    },
     Reload {
         dataflow_id: Uuid,
         node_id: NodeId,
@@ -73,25 +65,6 @@ pub enum ControlRequest {
         #[serde(default)]
         force: bool,
     },
-    StopByName {
-        name: String,
-        grace_duration: Option<Duration>,
-        #[serde(default)]
-        force: bool,
-    },
-    Logs {
-        uuid: Option<Uuid>,
-        name: Option<String>,
-        node: String,
-        tail: Option<usize>,
-    },
-    Destroy,
-    List,
-    Info {
-        dataflow_uuid: Uuid,
-    },
-    DaemonConnected,
-    ConnectedMachines,
     LogSubscribe {
         dataflow_id: Uuid,
         level: log::LevelFilter,
@@ -100,8 +73,6 @@ pub enum ControlRequest {
         build_id: BuildId,
         level: log::LevelFilter,
     },
-    CliAndDefaultDaemonOnSameMachine,
-    GetNodeInfo,
 }
 
 type Result<T> = std::result::Result<T, String>;
