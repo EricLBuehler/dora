@@ -3,9 +3,7 @@ use crate::common::{
     connect_to_coordinator_rpc, handle_dataflow_result, long_context, query_running_dataflows, rpc,
 };
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
-use dora_message::{
-    cli_to_coordinator::CliControlClient, coordinator_to_cli::StopDataflowReply,
-};
+use dora_message::{cli_to_coordinator::CliControlClient, coordinator_to_cli::StopDataflowReply};
 use duration_str::parse;
 use eyre::Context;
 use std::net::IpAddr;

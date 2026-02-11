@@ -117,7 +117,7 @@ async fn main() -> eyre::Result<()> {
 
 fn long_context() -> tarpc::context::Context {
     let mut ctx = tarpc::context::current();
-    ctx.deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+    ctx.deadline = std::time::Instant::now() + Duration::from_secs(600);
     ctx
 }
 

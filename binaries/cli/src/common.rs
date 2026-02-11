@@ -39,7 +39,7 @@ pub(crate) async fn rpc<T, E: std::error::Error + Send + Sync + 'static>(
 /// is too short for operations that wait on dataflow lifecycle events.
 pub(crate) fn long_context() -> tarpc::context::Context {
     let mut ctx = tarpc::context::current();
-    ctx.deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+    ctx.deadline = std::time::Instant::now() + Duration::from_secs(600);
     ctx
 }
 
@@ -113,11 +113,9 @@ impl CoordinatorOptions {
 }
 
 /// Connect to the coordinator's tarpc RPC service.
-///
-/// The RPC port is conventionally `control_port + 1`.
 pub(crate) async fn connect_to_coordinator_rpc(
     addr: IpAddr,
-    control_port: u16,
+    _control_port: u16,
 ) -> eyre::Result<CliControlClient> {
     let rpc_port = DORA_COORDINATOR_PORT_RPC_DEFAULT;
     let transport =
