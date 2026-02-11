@@ -1,8 +1,9 @@
 use communication_layer_request_reply::TcpConnection;
 use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
-use dora_message::cli_to_coordinator::{CliControlClient, ControlRequest};
+use dora_message::cli_to_coordinator::{CliControlClient, LegacyControlRequest};
 use dora_message::common::LogMessage;
 use dora_message::coordinator_to_cli::ControlRequestReply;
+use dora_message::id::{NodeId, OperatorId};
 use dora_message::tarpc;
 use eyre::Context;
 use notify::event::ModifyKind;
@@ -80,11 +81,11 @@ pub fn attach_dataflow(
                 for path in paths {
                     if let Some((dataflow_id, node_id, operator_id)) = node_path_lookup.get(&path) {
                         watcher_tx
-                            .send(AttachEvent::Control(ControlRequest::Reload {
+                            .send(AttachEvent::Reload {
                                 dataflow_id: *dataflow_id,
                                 node_id: node_id.clone(),
                                 operator_id: operator_id.clone(),
-                            }))
+                            })
                             .context("Could not send reload request to the cli loop")
                             .unwrap();
                     }
@@ -111,23 +112,10 @@ pub fn attach_dataflow(
     let mut ctrlc_sent = false;
     ctrlc::set_handler(move || {
         if ctrlc_sent {
-            ctrlc_tx
-                .send(AttachEvent::Control(ControlRequest::Stop {
-                    dataflow_uuid: dataflow_id,
-                    grace_duration: None,
-                    force: true,
-                }))
-                .ok();
+            ctrlc_tx.send(AttachEvent::Stop { force: true }).ok();
             std::process::abort();
         } else {
-            if ctrlc_tx
-                .send(AttachEvent::Control(ControlRequest::Stop {
-                    dataflow_uuid: dataflow_id,
-                    grace_duration: None,
-                    force: false,
-                }))
-                .is_err()
-            {
+            if ctrlc_tx.send(AttachEvent::Stop { force: false }).is_err() {
                 // bail!("failed to report ctrl-c event to dora-daemon");
             }
             ctrlc_sent = true;
@@ -142,7 +130,7 @@ pub fn attach_dataflow(
     };
     log_session
         .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe {
+            &serde_json::to_vec(&LegacyControlRequest::LogSubscribe {
                 dataflow_id,
                 level: log_level,
             })
@@ -160,40 +148,13 @@ pub fn attach_dataflow(
     });
 
     loop {
-        let control_request = match rx.recv_timeout(Duration::from_secs(1)) {
-            Err(_err) => ControlRequest::Check {
-                dataflow_uuid: dataflow_id,
-            },
-            Ok(AttachEvent::Control(control_request)) => control_request,
-            Ok(AttachEvent::Log(Ok(log_message))) => {
-                print_log_message(log_message, false, print_daemon_name);
-                continue;
-            }
-            Ok(AttachEvent::Log(Err(err))) => {
-                tracing::warn!("failed to parse log message: {:#?}", err);
-                continue;
-            }
-        };
-
-        let result: ControlRequestReply = match control_request {
-            ControlRequest::Check { dataflow_uuid } => {
-                rpc(client.check(tarpc::context::current(), dataflow_uuid))?
-            }
-            ControlRequest::Stop {
-                dataflow_uuid,
-                grace_duration,
-                force,
-            } => rpc(client.stop(
-                tarpc::context::current(),
-                dataflow_uuid,
-                grace_duration,
-                force,
-            ))?,
-            ControlRequest::Reload {
+        let result: ControlRequestReply = match rx.recv_timeout(Duration::from_secs(1)) {
+            Err(_err) => rpc(client.check(tarpc::context::current(), dataflow_id))?,
+            Ok(AttachEvent::Reload {
                 dataflow_id,
                 node_id,
                 operator_id,
-            } => {
+            }) => {
                 let uuid = rpc(client.reload(
                     tarpc::context::current(),
                     dataflow_id,
@@ -202,8 +163,15 @@ pub fn attach_dataflow(
                 ))?;
                 ControlRequestReply::DataflowReloaded { uuid }
             }
-            _ => {
-                error!("Unexpected control request in attach loop");
+            Ok(AttachEvent::Stop { force }) => {
+                rpc(client.stop(tarpc::context::current(), dataflow_id, None, force))?
+            }
+            Ok(AttachEvent::Log(Ok(log_message))) => {
+                print_log_message(log_message, false, print_daemon_name);
+                continue;
+            }
+            Ok(AttachEvent::Log(Err(err))) => {
+                tracing::warn!("failed to parse log message: {:#?}", err);
                 continue;
             }
         };
@@ -223,6 +191,13 @@ pub fn attach_dataflow(
 }
 
 enum AttachEvent {
-    Control(ControlRequest),
+    Reload {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        operator_id: Option<OperatorId>,
+    },
+    Stop {
+        force: bool,
+    },
     Log(eyre::Result<LogMessage>),
 }

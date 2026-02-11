@@ -2,7 +2,7 @@ use communication_layer_request_reply::TcpConnection;
 use dora_core::descriptor::Descriptor;
 use dora_message::{
     BuildId,
-    cli_to_coordinator::{BuildRequest, CliControlClient, ControlRequest},
+    cli_to_coordinator::{BuildRequest, CliControlClient, LegacyControlRequest},
     common::{GitSource, LogMessage},
     id::NodeId,
     tarpc,
@@ -53,7 +53,7 @@ pub fn wait_until_dataflow_built(
     };
     log_session
         .send(
-            &serde_json::to_vec(&ControlRequest::BuildLogSubscribe {
+            &serde_json::to_vec(&LegacyControlRequest::BuildLogSubscribe {
                 build_id,
                 level: log_level,
             })

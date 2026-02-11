@@ -3,7 +3,7 @@ use crate::{
     tcp_utils::{tcp_receive, tcp_send},
 };
 use dora_message::{
-    BuildId, cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
+    BuildId, cli_to_coordinator::LegacyControlRequest, coordinator_to_cli::ControlRequestReply,
 };
 use eyre::{Context, eyre};
 use futures::{
@@ -106,7 +106,7 @@ async fn handle_requests(
         let request =
             serde_json::from_slice(&raw).wrap_err("failed to deserialize incoming message");
 
-        if let Ok(ControlRequest::LogSubscribe { dataflow_id, level }) = request {
+        if let Ok(LegacyControlRequest::LogSubscribe { dataflow_id, level }) = request {
             let _ = tx
                 .send(ControlEvent::LogSubscribe {
                     dataflow_id,
@@ -117,7 +117,7 @@ async fn handle_requests(
             break;
         }
 
-        if let Ok(ControlRequest::BuildLogSubscribe { build_id, level }) = request {
+        if let Ok(LegacyControlRequest::BuildLogSubscribe { build_id, level }) = request {
             let _ = tx
                 .send(ControlEvent::BuildLogSubscribe {
                     build_id,

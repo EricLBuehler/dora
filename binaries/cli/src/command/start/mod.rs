@@ -17,7 +17,7 @@ use dora_core::{
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
 use dora_message::{
-    cli_to_coordinator::{CliControlClient, ControlRequest, StartRequest},
+    cli_to_coordinator::{CliControlClient, LegacyControlRequest, StartRequest},
     common::LogMessage,
     tarpc,
 };
@@ -160,7 +160,7 @@ fn wait_until_dataflow_started(
     };
     log_session
         .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe {
+            &serde_json::to_vec(&LegacyControlRequest::LogSubscribe {
                 dataflow_id,
                 level: log_level,
             })

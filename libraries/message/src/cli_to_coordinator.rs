@@ -50,21 +50,7 @@ pub struct StartRequest {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub enum ControlRequest {
-    Reload {
-        dataflow_id: Uuid,
-        node_id: NodeId,
-        operator_id: Option<OperatorId>,
-    },
-    Check {
-        dataflow_uuid: Uuid,
-    },
-    Stop {
-        dataflow_uuid: Uuid,
-        grace_duration: Option<Duration>,
-        #[serde(default)]
-        force: bool,
-    },
+pub enum LegacyControlRequest {
     LogSubscribe {
         dataflow_id: Uuid,
         level: log::LevelFilter,

@@ -12,7 +12,7 @@ use clap::Args;
 use communication_layer_request_reply::TcpConnection;
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::{
-    cli_to_coordinator::{CliControlClient, ControlRequest},
+    cli_to_coordinator::{CliControlClient, LegacyControlRequest},
     common::LogMessage,
     tarpc,
 };
@@ -96,7 +96,7 @@ pub fn logs(
     };
     log_session
         .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe {
+            &serde_json::to_vec(&LegacyControlRequest::LogSubscribe {
                 dataflow_id: uuid,
                 level: log_level,
             })
