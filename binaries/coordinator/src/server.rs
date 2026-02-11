@@ -279,33 +279,48 @@ impl CliControl for ControlServer {
     }
 
     async fn list(self, _context: Context) -> Result<DataflowList, String> {
-        let mut dataflows: Vec<_> = self.state.running_dataflows.iter().collect();
-        dataflows.sort_by_key(|d| (d.value().name.clone(), d.value().uuid));
+        // Convert to owned entries immediately to release DashMap locks.
+        let running: Vec<_> = self
+            .state
+            .running_dataflows
+            .iter()
+            .map(|d| DataflowListEntry {
+                id: DataflowIdAndName {
+                    uuid: d.value().uuid,
+                    name: d.value().name.clone(),
+                },
+                status: DataflowStatus::Running,
+            })
+            .collect();
+        let finished_failed: Vec<_> = self
+            .state
+            .dataflow_results
+            .iter()
+            .map(|r| {
+                let uuid = *r.key();
+                let name = self
+                    .state
+                    .archived_dataflows
+                    .get(&uuid)
+                    .and_then(|d| d.name.clone());
+                let id = DataflowIdAndName { uuid, name };
+                let status = if r.value().values().all(|r| r.is_ok()) {
+                    DataflowStatus::Finished
+                } else {
+                    DataflowStatus::Failed
+                };
+                DataflowListEntry { id, status }
+            })
+            .collect();
 
-        let running = dataflows.into_iter().map(|d| DataflowListEntry {
-            id: DataflowIdAndName {
-                uuid: d.value().uuid,
-                name: d.value().name.clone(),
-            },
-            status: DataflowStatus::Running,
-        });
-        let finished_failed = self.state.dataflow_results.iter().map(|r| {
-            let uuid = *r.key();
-            let name = self
-                .state
-                .archived_dataflows
-                .get(&uuid)
-                .and_then(|d| d.name.clone());
-            let id = DataflowIdAndName { uuid, name };
-            let status = if r.value().values().all(|r| r.is_ok()) {
-                DataflowStatus::Finished
-            } else {
-                DataflowStatus::Failed
-            };
-            DataflowListEntry { id, status }
-        });
+        let sort_key = |e: &DataflowListEntry| (e.id.name.clone(), e.id.uuid);
+        let mut running = running;
+        let mut finished_failed = finished_failed;
+        running.sort_by_key(sort_key);
+        finished_failed.sort_by_key(sort_key);
 
-        Ok(DataflowList(running.chain(finished_failed).collect()))
+        running.extend(finished_failed);
+        Ok(DataflowList(running))
     }
 
     async fn info(self, _context: Context, dataflow_uuid: Uuid) -> Result<DataflowInfo, String> {
