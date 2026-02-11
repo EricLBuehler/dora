@@ -10,11 +10,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-use dora_message::{
-    coordinator_to_cli::NodeInfo,
-    id::NodeId,
-    tarpc,
-};
+use dora_message::{coordinator_to_cli::NodeInfo, id::NodeId, tarpc};
 use eyre::Context;
 
 use crate::common::{connect_to_coordinator_rpc, rpc};
@@ -260,9 +256,8 @@ fn run_app<B: Backend>(
     let mut last_update = Instant::now();
     let mut node_infos: Vec<NodeInfo> = Vec::new();
 
-    let rpc_port = coordinator_port + 1;
     // Reuse coordinator connection
-    let client = connect_to_coordinator_rpc(coordinator_addr, rpc_port)
+    let client = connect_to_coordinator_rpc(coordinator_addr, coordinator_port)
         .wrap_err("Failed to connect to coordinator")?;
 
     // Query node info once initially

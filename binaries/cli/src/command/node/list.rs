@@ -10,12 +10,7 @@ use crate::{
     common::{CoordinatorOptions, rpc},
     formatting::OutputFormat,
 };
-use dora_message::{
-    cli_to_coordinator::CliControlClient,
-    coordinator_to_cli::NodeInfo,
-    tarpc,
-};
-use eyre::Context;
+use dora_message::{cli_to_coordinator::CliControlClient, coordinator_to_cli::NodeInfo, tarpc};
 
 /// List all currently running nodes and their status.
 ///

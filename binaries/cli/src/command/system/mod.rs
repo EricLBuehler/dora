@@ -1,6 +1,5 @@
 pub mod status;
 
-
 use super::Executable;
 use status::Status;
 

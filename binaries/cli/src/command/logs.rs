@@ -46,11 +46,9 @@ impl Executable for LogsArgs {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let rpc_port = self.coordinator_port + 1;
-        let client = connect_to_coordinator_rpc(self.coordinator_addr, rpc_port)
+        let client = connect_to_coordinator_rpc(self.coordinator_addr, self.coordinator_port)
             .wrap_err("failed to connect to dora coordinator")?;
-        let uuid =
-            resolve_dataflow_identifier_interactive(&client, self.dataflow.as_deref())?;
+        let uuid = resolve_dataflow_identifier_interactive(&client, self.dataflow.as_deref())?;
         logs(
             &client,
             uuid,

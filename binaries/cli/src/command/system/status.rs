@@ -6,9 +6,7 @@ use crate::{
 use dora_core::descriptor::DescriptorExt;
 use dora_core::{descriptor::Descriptor, topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT};
 use dora_message::{
-    cli_to_coordinator::CliControlClient,
-    coordinator_to_cli::DataflowStatus,
-    tarpc,
+    cli_to_coordinator::CliControlClient, coordinator_to_cli::DataflowStatus, tarpc,
 };
 use eyre::{Context, bail};
 use std::{
@@ -28,10 +26,8 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     };
     let mut stdout = termcolor::StandardStream::stdout(color_choice);
 
-    let rpc_port = coordinator_addr.port() + 1;
-
     // Coordinator status
-    let client = match connect_to_coordinator_rpc(coordinator_addr.ip(), rpc_port) {
+    let client = match connect_to_coordinator_rpc(coordinator_addr.ip(), coordinator_addr.port()) {
         Ok(client) => {
             let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
             write!(stdout, "✓ ")?;

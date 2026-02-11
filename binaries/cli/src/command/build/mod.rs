@@ -149,9 +149,7 @@ pub fn build(
             Ok(coordinator_client) => {
                 // we found a local coordinator instance at default port -> use it for building
                 log::info!("Found local dora coordinator instance -> building through coordinator");
-                BuildKind::ThroughCoordinator {
-                    coordinator_client,
-                }
+                BuildKind::ThroughCoordinator { coordinator_client }
             }
             Err(_) => {
                 log::warn!("No dora coordinator instance found -> trying a local build");
@@ -186,13 +184,13 @@ pub fn build(
                 .write_out_for_dataflow(&dataflow_path)
                 .context("failed to write out dataflow session file")?;
         }
-        BuildKind::ThroughCoordinator {
-            coordinator_client,
-        } => {
+        BuildKind::ThroughCoordinator { coordinator_client } => {
+            let coord = coordinator_socket(coordinator_addr, coordinator_port);
             let local_working_dir = local_working_dir(
                 &dataflow_path,
                 &dataflow_descriptor,
                 &coordinator_client,
+                coord.ip(),
             )?;
             let build_id = build_distributed_dataflow(
                 &coordinator_client,
@@ -241,8 +239,7 @@ fn connect_to_coordinator_rpc_with_defaults(
 ) -> eyre::Result<CliControlClient> {
     let addr = coordinator_addr.unwrap_or(LOCALHOST);
     let control_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
-    let rpc_port = control_port + 1;
-    connect_to_coordinator_rpc(addr, rpc_port)
+    connect_to_coordinator_rpc(addr, control_port)
 }
 
 fn coordinator_socket(

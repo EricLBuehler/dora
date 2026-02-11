@@ -12,7 +12,7 @@ use dora_message::{
     id::{DataId, NodeId},
     tarpc,
 };
-use eyre::{Context, ContextCompat, bail};
+use eyre::{ContextCompat, bail};
 use uuid::Uuid;
 
 #[derive(Debug, clap::Args)]

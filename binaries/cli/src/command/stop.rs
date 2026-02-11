@@ -4,9 +4,7 @@ use crate::common::{
 };
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::{
-    cli_to_coordinator::CliControlClient,
-    coordinator_to_cli::ControlRequestReply,
-    tarpc,
+    cli_to_coordinator::CliControlClient, coordinator_to_cli::ControlRequestReply, tarpc,
 };
 use duration_str::parse;
 use eyre::{Context, bail};
@@ -52,17 +50,14 @@ pub struct Stop {
 impl Executable for Stop {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let rpc_port = self.coordinator_port + 1;
-        let client = connect_to_coordinator_rpc(self.coordinator_addr, rpc_port)
+        let client = connect_to_coordinator_rpc(self.coordinator_addr, self.coordinator_port)
             .wrap_err("could not connect to dora coordinator")?;
         match (self.uuid, self.name) {
             (Some(uuid), _) => stop_dataflow(uuid, self.grace_duration, self.force, &client),
             (None, Some(name)) => {
                 stop_dataflow_by_name(name, self.grace_duration, self.force, &client)
             }
-            (None, None) => {
-                stop_dataflow_interactive(self.grace_duration, self.force, &client)
-            }
+            (None, None) => stop_dataflow_interactive(self.grace_duration, self.force, &client),
         }
     }
 }

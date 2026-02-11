@@ -110,12 +110,8 @@ pub(crate) struct CoordinatorOptions {
 }
 
 impl CoordinatorOptions {
-    pub fn rpc_port(&self) -> u16 {
-        self.coordinator_port + 1
-    }
-
     pub fn connect_rpc(&self) -> eyre::Result<CliControlClient> {
-        connect_to_coordinator_rpc(self.coordinator_addr, self.rpc_port())
+        connect_to_coordinator_rpc(self.coordinator_addr, self.coordinator_port)
     }
 }
 
@@ -124,8 +120,9 @@ impl CoordinatorOptions {
 /// The RPC port is conventionally `control_port + 1`.
 pub(crate) fn connect_to_coordinator_rpc(
     addr: IpAddr,
-    rpc_port: u16,
+    control_port: u16,
 ) -> eyre::Result<CliControlClient> {
+    let rpc_port = control_port + 1;
     let client = block_on(async {
         let transport = tarpc::serde_transport::tcp::connect(
             (addr, rpc_port),
@@ -137,7 +134,7 @@ pub(crate) fn connect_to_coordinator_rpc(
         // called inside the async block driven by `block_on`.
         let client = CliControlClient::new(client::Config::default(), transport).spawn();
         Ok::<_, eyre::Error>(client)
-    })??;
+    })?;
     Ok(client)
 }
 
@@ -161,13 +158,14 @@ pub(crate) fn local_working_dir(
     dataflow_path: &Path,
     dataflow_descriptor: &Descriptor,
     client: &CliControlClient,
+    coordinator_addr: IpAddr,
 ) -> eyre::Result<Option<PathBuf>> {
     Ok(
         if dataflow_descriptor
             .nodes
             .iter()
             .all(|n| n.deploy.as_ref().map(|d| d.machine.as_ref()).is_none())
-            && cli_and_daemon_on_same_machine(client)?
+            && cli_and_daemon_on_same_machine(client, coordinator_addr)?
         {
             Some(
                 dunce::canonicalize(dataflow_path)
@@ -184,6 +182,7 @@ pub(crate) fn local_working_dir(
 
 pub(crate) fn cli_and_daemon_on_same_machine(
     client: &CliControlClient,
+    coordinator_addr: IpAddr,
 ) -> eyre::Result<bool> {
     let result = rpc(client.cli_and_default_daemon_on_same_machine(tarpc::context::current()))?;
 
@@ -197,7 +196,7 @@ pub(crate) fn cli_and_daemon_on_same_machine(
         .ok()
         .map(|a| a.ip());
 
-    Ok(result.default_daemon.is_some() && result.default_daemon == result.cli)
+    Ok(result.default_daemon.is_some() && result.default_daemon == cli_ip)
 }
 
 pub(crate) fn write_events_to() -> Option<PathBuf> {

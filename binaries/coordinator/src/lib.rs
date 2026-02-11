@@ -105,9 +105,10 @@ pub async fn start(
 
     // Bind the tarpc RPC server on the same interface
     let rpc_bind = SocketAddr::new(bind_control.ip(), bind_control.port() + 1);
-    let listener = tarpc::serde_transport::tcp::listen(rpc_bind, tokio_serde::formats::Json::default)
-        .await
-        .wrap_err("failed to start tarpc server for control messages")?;
+    let listener =
+        tarpc::serde_transport::tcp::listen(rpc_bind, tokio_serde::formats::Json::default)
+            .await
+            .wrap_err("failed to start tarpc server for control messages")?;
 
     let rpc_port = listener.local_addr().port();
 

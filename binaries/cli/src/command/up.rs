@@ -4,6 +4,8 @@ use crate::{
     LOCALHOST,
     common::{connect_to_coordinator_rpc, rpc},
 };
+use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
+use dora_message::tarpc;
 use eyre::{Context, ContextCompat, bail};
 use std::path::PathBuf;
 use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
@@ -30,14 +32,13 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
     let coordinator_addr = LOCALHOST;
     let control_port = DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-    let rpc_port = control_port + 1;
-    let client = match connect_to_coordinator_rpc(coordinator_addr, rpc_port) {
+    let client = match connect_to_coordinator_rpc(coordinator_addr, control_port) {
         Ok(client) => client,
         Err(_) => {
             start_coordinator().wrap_err("failed to start dora-coordinator")?;
 
             loop {
-                match connect_to_coordinator_rpc(coordinator_addr, rpc_port) {
+                match connect_to_coordinator_rpc(coordinator_addr, control_port) {
                     Ok(client) => break client,
                     Err(_) => {
                         // sleep a bit until the coordinator accepts connections
@@ -74,8 +75,7 @@ pub(crate) fn destroy(
     coordinator_addr: SocketAddr,
 ) -> Result<(), eyre::ErrReport> {
     let UpConfig {} = parse_dora_config(config_path)?;
-    let rpc_port = coordinator_addr.port() + 1;
-    match connect_to_coordinator_rpc(coordinator_addr.ip(), rpc_port) {
+    match connect_to_coordinator_rpc(coordinator_addr.ip(), coordinator_addr.port()) {
         Ok(client) => {
             rpc(client.destroy(tarpc::context::current()))?;
             println!("Coordinator and daemons destroyed successfully");

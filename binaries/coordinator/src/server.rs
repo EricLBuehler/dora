@@ -26,6 +26,44 @@ fn err_to_string(err: eyre::Report) -> String {
     format!("{err:?}")
 }
 
+/// Shared logic for stopping a dataflow by UUID.
+async fn stop_dataflow_impl(
+    state: &CoordinatorState,
+    dataflow_uuid: Uuid,
+    grace_duration: Option<Duration>,
+    force: bool,
+) -> Result<ControlRequestReply, String> {
+    if let Some(result) = state.dataflow_results.get(&dataflow_uuid) {
+        let reply = ControlRequestReply::DataflowStopped {
+            uuid: dataflow_uuid,
+            result: dataflow_result(result.value(), dataflow_uuid, &state.clock),
+        };
+        return Ok(reply);
+    }
+
+    let (tx, rx) = oneshot::channel();
+    let mut dataflow = stop_dataflow(
+        &state.running_dataflows,
+        dataflow_uuid,
+        &state.daemon_connections,
+        state.clock.new_timestamp(),
+        grace_duration,
+        force,
+    )
+    .await
+    .map_err(err_to_string)?;
+
+    dataflow.stop_reply_senders.push(tx);
+    // Drop the DashMap RefMut so the event loop can access the entry.
+    drop(dataflow);
+
+    match rx.await {
+        Ok(Ok(reply)) => Ok(reply),
+        Ok(Err(err)) => Err(err_to_string(err)),
+        Err(_) => Err("coordinator dropped the reply sender".to_string()),
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ControlServer {
     pub(crate) state: Arc<CoordinatorState>,
@@ -63,9 +101,7 @@ impl CliControl for ControlServer {
         }
 
         match rx.await {
-            Ok(Ok(ControlRequestReply::DataflowBuildFinished { result, .. })) => {
-                result.map_err(|e| e)
-            }
+            Ok(Ok(ControlRequestReply::DataflowBuildFinished { result, .. })) => result,
             Ok(Ok(_)) => Ok(()),
             Ok(Err(err)) => Err(err_to_string(err)),
             Err(_) => Err("coordinator dropped the reply sender".to_string()),
@@ -183,35 +219,7 @@ impl CliControl for ControlServer {
         grace_duration: Option<Duration>,
         force: bool,
     ) -> Result<ControlRequestReply, String> {
-        if let Some(result) = self.state.dataflow_results.get(&dataflow_uuid) {
-            let reply = ControlRequestReply::DataflowStopped {
-                uuid: dataflow_uuid,
-                result: dataflow_result(result.value(), dataflow_uuid, &self.state.clock),
-            };
-            return Ok(reply);
-        }
-
-        let (tx, rx) = oneshot::channel();
-        let mut dataflow = stop_dataflow(
-            &self.state.running_dataflows,
-            dataflow_uuid,
-            &self.state.daemon_connections,
-            self.state.clock.new_timestamp(),
-            grace_duration,
-            force,
-        )
-        .await
-        .map_err(err_to_string)?;
-
-        dataflow.stop_reply_senders.push(tx);
-        // Drop the DashMap RefMut so the event loop can access the entry.
-        drop(dataflow);
-
-        match rx.await {
-            Ok(Ok(reply)) => Ok(reply),
-            Ok(Err(err)) => Err(err_to_string(err)),
-            Err(_) => Err("coordinator dropped the reply sender".to_string()),
-        }
+        stop_dataflow_impl(&self.state, dataflow_uuid, grace_duration, force).await
     }
 
     async fn stop_by_name(
@@ -228,35 +236,7 @@ impl CliControl for ControlServer {
         )
         .map_err(err_to_string)?;
 
-        if let Some(result) = self.state.dataflow_results.get(&dataflow_uuid) {
-            let reply = ControlRequestReply::DataflowStopped {
-                uuid: dataflow_uuid,
-                result: dataflow_result(result.value(), dataflow_uuid, &self.state.clock),
-            };
-            return Ok(reply);
-        }
-
-        let (tx, rx) = oneshot::channel();
-        let mut dataflow = stop_dataflow(
-            &self.state.running_dataflows,
-            dataflow_uuid,
-            &self.state.daemon_connections,
-            self.state.clock.new_timestamp(),
-            grace_duration,
-            force,
-        )
-        .await
-        .map_err(err_to_string)?;
-
-        dataflow.stop_reply_senders.push(tx);
-        // Drop the DashMap RefMut so the event loop can access the entry.
-        drop(dataflow);
-
-        match rx.await {
-            Ok(Ok(reply)) => Ok(reply),
-            Ok(Err(err)) => Err(err_to_string(err)),
-            Err(_) => Err("coordinator dropped the reply sender".to_string()),
-        }
+        stop_dataflow_impl(&self.state, dataflow_uuid, grace_duration, force).await
     }
 
     async fn logs(

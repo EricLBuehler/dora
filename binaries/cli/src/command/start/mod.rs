@@ -119,11 +119,15 @@ fn start_dataflow(
     let dataflow_session =
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
 
-    let rpc_port = coordinator_socket.port() + 1;
-    let client = connect_to_coordinator_rpc(coordinator_socket.ip(), rpc_port)
+    let client = connect_to_coordinator_rpc(coordinator_socket.ip(), coordinator_socket.port())
         .wrap_err("failed to connect to dora coordinator")?;
 
-    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &client)?;
+    let local_working_dir = local_working_dir(
+        &dataflow,
+        &dataflow_descriptor,
+        &client,
+        coordinator_socket.ip(),
+    )?;
 
     let dataflow_id = rpc(client.start(
         tarpc::context::current(),
