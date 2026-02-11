@@ -8,13 +8,14 @@ use dora_message::{
 use tokio::sync::mpsc;
 
 use crate::{
-    ArchivedDataflow, CachedResult, DaemonConnections, Event, RunningBuild, RunningDataflow,
+    ArchivedDataflow, BuildFinishedResult, CachedResult, DaemonConnections, Event, RunningBuild,
+    RunningDataflow,
 };
 
 pub struct CoordinatorState {
     pub clock: Arc<HLC>,
     pub running_builds: DashMap<BuildId, RunningBuild>,
-    pub finished_builds: DashMap<BuildId, CachedResult>,
+    pub finished_builds: DashMap<BuildId, CachedResult<BuildFinishedResult>>,
     pub running_dataflows: DashMap<DataflowId, RunningDataflow>,
     pub dataflow_results: DashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     pub archived_dataflows: DashMap<DataflowId, ArchivedDataflow>,

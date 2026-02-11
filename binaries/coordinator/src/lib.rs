@@ -20,9 +20,7 @@ use dora_message::{
     BuildId, SessionId,
     cli_to_coordinator::{BuildRequest, CliControl},
     common::DaemonId,
-    coordinator_to_cli::{
-        ControlRequestReply, DataflowResult, LogLevel, LogMessage, StopDataflowReply,
-    },
+    coordinator_to_cli::{DataflowResult, LogLevel, LogMessage, StopDataflowReply},
     coordinator_to_daemon::{
         BuildDataflowNodes, DaemonCoordinatorEvent, RegisterResult, Timestamped,
     },
@@ -631,9 +629,9 @@ async fn start_inner(
                             Err(format!("build failed: {}", build.errors.join("\n\n")))
                         };
 
-                        build.build_result.set_result(Ok(
-                            ControlRequestReply::DataflowBuildFinished { build_id, result },
-                        ));
+                        build
+                            .build_result
+                            .set_result(Ok(BuildFinishedResult { build_id, result }));
 
                         coordinator_state
                             .finished_builds
@@ -657,9 +655,7 @@ async fn start_inner(
                         Ok(()) => {
                             if dataflow.pending_spawn_results.is_empty() {
                                 tracing::info!("successfully spawned dataflow `{dataflow_id}`",);
-                                dataflow.spawn_result.set_result(Ok(
-                                    ControlRequestReply::DataflowSpawned { uuid: dataflow_id },
-                                ));
+                                dataflow.spawn_result.set_result(Ok(dataflow_id));
                             }
                         }
                         Err(err) => {
@@ -774,9 +770,16 @@ async fn send_heartbeat_message(
         .wrap_err("failed to send heartbeat message to daemon")
 }
 
+/// Result of a completed dataflow build.
+#[derive(Debug, Clone)]
+pub struct BuildFinishedResult {
+    pub build_id: BuildId,
+    pub result: Result<(), String>,
+}
+
 struct RunningBuild {
     errors: Vec<String>,
-    build_result: CachedResult,
+    build_result: CachedResult<BuildFinishedResult>,
 
     /// Buffer for log messages that were sent before there were any subscribers.
     buffered_log_messages: Vec<LogMessage>,
@@ -800,7 +803,7 @@ struct RunningDataflow {
     /// Latest metrics for each node (from daemons)
     node_metrics: BTreeMap<NodeId, dora_message::daemon_to_coordinator::NodeMetrics>,
 
-    spawn_result: CachedResult,
+    spawn_result: CachedResult<Uuid>,
     stop_reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<StopDataflowReply>>>,
 
     /// Buffer for log messages that were sent before there were any subscribers.
@@ -810,16 +813,16 @@ struct RunningDataflow {
     pending_spawn_results: BTreeSet<DaemonId>,
 }
 
-pub enum CachedResult {
+pub enum CachedResult<T> {
     Pending {
-        result_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
+        result_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<T>>>,
     },
     Cached {
-        result: eyre::Result<ControlRequestReply>,
+        result: eyre::Result<T>,
     },
 }
 
-impl Default for CachedResult {
+impl<T> Default for CachedResult<T> {
     fn default() -> Self {
         Self::Pending {
             result_senders: Vec::new(),
@@ -827,11 +830,8 @@ impl Default for CachedResult {
     }
 }
 
-impl CachedResult {
-    fn register(
-        &mut self,
-        reply_sender: tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>,
-    ) {
+impl<T: Clone> CachedResult<T> {
+    fn register(&mut self, reply_sender: tokio::sync::oneshot::Sender<eyre::Result<T>>) {
         match self {
             CachedResult::Pending { result_senders } => result_senders.push(reply_sender),
             CachedResult::Cached { result } => {
@@ -840,7 +840,7 @@ impl CachedResult {
         }
     }
 
-    fn set_result(&mut self, result: eyre::Result<ControlRequestReply>) {
+    fn set_result(&mut self, result: eyre::Result<T>) {
         match self {
             CachedResult::Pending { result_senders } => {
                 for sender in result_senders.drain(..) {
@@ -852,10 +852,7 @@ impl CachedResult {
         }
     }
 
-    fn send_result_to(
-        result: &eyre::Result<ControlRequestReply>,
-        sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,
-    ) {
+    fn send_result_to(result: &eyre::Result<T>, sender: oneshot::Sender<eyre::Result<T>>) {
         let result = match result {
             Ok(r) => Ok(r.clone()),
             Err(err) => Err(eyre!("{err:?}")),

@@ -6,9 +6,9 @@ use dora_message::{
     cli_to_coordinator::{BuildRequest, CliControl, StartRequest},
     common::DaemonId,
     coordinator_to_cli::{
-        CheckDataflowReply, CliAndDefaultDaemonIps, ControlRequestReply, DataflowIdAndName,
-        DataflowInfo, DataflowList, DataflowListEntry, DataflowResult, DataflowStatus, NodeInfo,
-        NodeMetricsInfo, StopDataflowReply,
+        CheckDataflowReply, CliAndDefaultDaemonIps, DataflowIdAndName, DataflowInfo, DataflowList,
+        DataflowListEntry, DataflowResult, DataflowStatus, NodeInfo, NodeMetricsInfo,
+        StopDataflowReply,
     },
     tarpc::context::Context,
 };
@@ -102,8 +102,7 @@ impl CliControl for ControlServer {
         }
 
         match rx.await {
-            Ok(Ok(ControlRequestReply::DataflowBuildFinished { result, .. })) => result,
-            Ok(Ok(_)) => Ok(()),
+            Ok(Ok(build_finished)) => build_finished.result,
             Ok(Err(err)) => Err(err_to_string(err)),
             Err(_) => Err("coordinator dropped the reply sender".to_string()),
         }

@@ -2,9 +2,7 @@ use crate::{
     Event,
     tcp_utils::{tcp_receive, tcp_send},
 };
-use dora_message::{
-    BuildId, cli_to_coordinator::LegacyControlRequest, coordinator_to_cli::ControlRequestReply,
-};
+use dora_message::{BuildId, cli_to_coordinator::LegacyControlRequest};
 use eyre::{Context, eyre};
 use futures::{
     FutureExt, Stream, StreamExt,
@@ -82,79 +80,73 @@ async fn handle_requests(
     _finish_tx: mpsc::Sender<()>,
 ) {
     let _peer_addr = connection.peer_addr().ok();
-    loop {
-        let next_request = tcp_receive(&mut connection).map(Either::Left);
-        let coordinator_stopped = tx.closed().map(Either::Right);
-        let raw = match (next_request, coordinator_stopped).race().await {
-            Either::Right(()) => break,
-            Either::Left(request) => match request {
-                Ok(message) => message,
-                Err(err) => match err.kind() {
-                    ErrorKind::UnexpectedEof => {
-                        tracing::trace!("Control connection closed");
-                        break;
-                    }
-                    err => {
-                        let err = eyre!(err).wrap_err("failed to receive incoming message");
-                        tracing::error!("{err}");
-                        break;
-                    }
-                },
-            },
-        };
 
-        let request =
-            serde_json::from_slice(&raw).wrap_err("failed to deserialize incoming message");
-
-        if let Ok(LegacyControlRequest::LogSubscribe { dataflow_id, level }) = request {
-            let _ = tx
-                .send(ControlEvent::LogSubscribe {
-                    dataflow_id,
-                    level,
-                    connection,
-                })
-                .await;
-            break;
-        }
-
-        if let Ok(LegacyControlRequest::BuildLogSubscribe { build_id, level }) = request {
-            let _ = tx
-                .send(ControlEvent::BuildLogSubscribe {
-                    build_id,
-                    level,
-                    connection,
-                })
-                .await;
-            break;
-        }
-
-        // All other control requests are handled via the tarpc service.
-        // If a non-subscribe request arrives on the legacy TCP channel,
-        // respond with an error.
-        let reply = ControlRequestReply::Error(
-            "this control request must be sent via the tarpc service".to_string(),
-        );
-        let serialized: Vec<u8> =
-            match serde_json::to_vec(&reply).wrap_err("failed to serialize ControlRequestReply") {
-                Ok(s) => s,
-                Err(err) => {
-                    tracing::error!("{err:?}");
-                    break;
-                }
-            };
-        match tcp_send(&mut connection, &serialized).await {
-            Ok(()) => {}
+    let next_request = tcp_receive(&mut connection).map(Either::Left);
+    let coordinator_stopped = tx.closed().map(Either::Right);
+    let raw = match (next_request, coordinator_stopped).race().await {
+        Either::Right(()) => return,
+        Either::Left(request) => match request {
+            Ok(message) => message,
             Err(err) => match err.kind() {
                 ErrorKind::UnexpectedEof => {
-                    tracing::debug!("Control connection closed while trying to send reply");
-                    break;
+                    tracing::trace!("Control connection closed");
+                    return;
                 }
                 err => {
-                    let err = eyre!(err).wrap_err("failed to send reply");
+                    let err = eyre!(err).wrap_err("failed to receive incoming message");
                     tracing::error!("{err}");
-                    break;
+                    return;
                 }
             },
+        },
+    };
+
+    let request = serde_json::from_slice(&raw).wrap_err("failed to deserialize incoming message");
+
+    match request {
+        Ok(request) => match request {
+            LegacyControlRequest::LogSubscribe { dataflow_id, level } => {
+                let _ = tx
+                    .send(ControlEvent::LogSubscribe {
+                        dataflow_id,
+                        level,
+                        connection,
+                    })
+                    .await;
+            }
+            LegacyControlRequest::BuildLogSubscribe { build_id, level } => {
+                let _ = tx
+                    .send(ControlEvent::BuildLogSubscribe {
+                        build_id,
+                        level,
+                        connection,
+                    })
+                    .await;
+            }
+        },
+        Err(err) => {
+            tracing::warn!("failed to parse incoming control message: {:#?}", err);
+            let reply = format!("failed to parse message: {err:?}");
+            let serialized: Vec<u8> =
+                match serde_json::to_vec(&reply).wrap_err("failed to serialize message") {
+                    Ok(s) => s,
+                    Err(err) => {
+                        tracing::error!("{err:?}");
+                        return;
+                    }
+                };
+            match tcp_send(&mut connection, &serialized).await {
+                Ok(()) => {}
+                Err(err) => match err.kind() {
+                    ErrorKind::UnexpectedEof => {
+                        tracing::debug!("Control connection closed while trying to send reply");
+                    }
+                    err => {
+                        let err = eyre!(err).wrap_err("failed to send reply");
+                        tracing::error!("{err}");
+                    }
+                },
+            };
         }
     }
 }
