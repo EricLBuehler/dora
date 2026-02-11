@@ -990,7 +990,7 @@ async fn stop_dataflow<'a>(
     })?;
 
     // Send stop commands without holding any DashMap locks.
-    for (daemon_id, stream) in &daemon_streams {
+    for (_daemon_id, stream) in &daemon_streams {
         let mut stream = stream.lock().await;
         tcp_send(&mut stream, &message)
             .await
@@ -1007,7 +1007,6 @@ async fn stop_dataflow<'a>(
                 .wrap_err("failed to stop dataflow")?,
             other => bail!("unexpected reply after sending stop: {other:?}"),
         }
-        let _ = daemon_id; // suppress unused warning
     }
 
     tracing::info!("successfully send stop dataflow `{dataflow_uuid}` to all daemons");
@@ -1051,7 +1050,7 @@ async fn reload_dataflow(
         timestamp,
     })?;
 
-    for (machine_id, stream) in &daemon_streams {
+    for (_machine_id, stream) in &daemon_streams {
         let mut stream = stream.lock().await;
         tcp_send(&mut stream, &message)
             .await
@@ -1068,7 +1067,6 @@ async fn reload_dataflow(
                 .wrap_err("failed to reload dataflow")?,
             other => bail!("unexpected reply after sending reload: {other:?}"),
         }
-        let _ = machine_id;
     }
     tracing::info!("successfully reloaded dataflow `{dataflow_id}`");
 
