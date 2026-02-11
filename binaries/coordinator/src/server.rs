@@ -6,8 +6,9 @@ use dora_message::{
     cli_to_coordinator::{BuildRequest, CliControl, StartRequest},
     common::DaemonId,
     coordinator_to_cli::{
-        CliAndDefaultDaemonIps, ControlRequestReply, DataflowIdAndName, DataflowInfo, DataflowList,
-        DataflowListEntry, DataflowResult, DataflowStatus, NodeInfo, NodeMetricsInfo,
+        CheckDataflowReply, CliAndDefaultDaemonIps, ControlRequestReply, DataflowIdAndName,
+        DataflowInfo, DataflowList, DataflowListEntry, DataflowResult, DataflowStatus, NodeInfo,
+        NodeMetricsInfo, StopDataflowReply,
     },
     tarpc::context::Context,
 };
@@ -32,9 +33,9 @@ async fn stop_dataflow_impl(
     dataflow_uuid: Uuid,
     grace_duration: Option<Duration>,
     force: bool,
-) -> Result<ControlRequestReply, String> {
+) -> Result<StopDataflowReply, String> {
     if let Some(result) = state.dataflow_results.get(&dataflow_uuid) {
-        let reply = ControlRequestReply::DataflowStopped {
+        let reply = StopDataflowReply {
             uuid: dataflow_uuid,
             result: dataflow_result(result.value(), dataflow_uuid, &state.clock),
         };
@@ -192,12 +193,12 @@ impl CliControl for ControlServer {
         self,
         _context: Context,
         dataflow_uuid: Uuid,
-    ) -> Result<ControlRequestReply, String> {
+    ) -> Result<CheckDataflowReply, String> {
         let status = match self.state.running_dataflows.get(&dataflow_uuid) {
-            Some(_) => ControlRequestReply::DataflowSpawned {
+            Some(_) => CheckDataflowReply::Running {
                 uuid: dataflow_uuid,
             },
-            None => ControlRequestReply::DataflowStopped {
+            None => CheckDataflowReply::Stopped {
                 uuid: dataflow_uuid,
                 result: self
                     .state
@@ -218,7 +219,7 @@ impl CliControl for ControlServer {
         dataflow_uuid: Uuid,
         grace_duration: Option<Duration>,
         force: bool,
-    ) -> Result<ControlRequestReply, String> {
+    ) -> Result<StopDataflowReply, String> {
         stop_dataflow_impl(&self.state, dataflow_uuid, grace_duration, force).await
     }
 
@@ -228,7 +229,7 @@ impl CliControl for ControlServer {
         name: String,
         grace_duration: Option<Duration>,
         force: bool,
-    ) -> Result<ControlRequestReply, String> {
+    ) -> Result<StopDataflowReply, String> {
         let dataflow_uuid = resolve_name(
             name,
             &self.state.running_dataflows,

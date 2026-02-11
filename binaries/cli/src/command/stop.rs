@@ -4,10 +4,10 @@ use crate::common::{
 };
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::{
-    cli_to_coordinator::CliControlClient, coordinator_to_cli::ControlRequestReply, tarpc,
+    cli_to_coordinator::CliControlClient, coordinator_to_cli::StopDataflowReply, tarpc,
 };
 use duration_str::parse;
-use eyre::{Context, bail};
+use eyre::Context;
 use std::net::IpAddr;
 use std::time::Duration;
 use uuid::Uuid;
@@ -85,13 +85,9 @@ fn stop_dataflow(
     force: bool,
     client: &CliControlClient,
 ) -> Result<(), eyre::ErrReport> {
-    let result = rpc(client.stop(tarpc::context::current(), uuid, grace_duration, force))?;
-    match result {
-        ControlRequestReply::DataflowStopped { uuid, result } => {
-            handle_dataflow_result(result, Some(uuid))
-        }
-        other => bail!("unexpected stop dataflow reply: {other:?}"),
-    }
+    let StopDataflowReply { uuid, result } =
+        rpc(client.stop(tarpc::context::current(), uuid, grace_duration, force))?;
+    handle_dataflow_result(result, Some(uuid))
 }
 
 fn stop_dataflow_by_name(
@@ -100,11 +96,7 @@ fn stop_dataflow_by_name(
     force: bool,
     client: &CliControlClient,
 ) -> Result<(), eyre::ErrReport> {
-    let result = rpc(client.stop_by_name(tarpc::context::current(), name, grace_duration, force))?;
-    match result {
-        ControlRequestReply::DataflowStopped { uuid, result } => {
-            handle_dataflow_result(result, Some(uuid))
-        }
-        other => bail!("unexpected stop dataflow reply: {other:?}"),
-    }
+    let StopDataflowReply { uuid, result } =
+        rpc(client.stop_by_name(tarpc::context::current(), name, grace_duration, force))?;
+    handle_dataflow_result(result, Some(uuid))
 }

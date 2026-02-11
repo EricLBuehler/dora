@@ -8,7 +8,8 @@ use crate::{
     BuildId, SessionId,
     common::{DaemonId, GitSource},
     coordinator_to_cli::{
-        CliAndDefaultDaemonIps, ControlRequestReply, DataflowInfo, DataflowList, NodeInfo,
+        CheckDataflowReply, CliAndDefaultDaemonIps, DataflowInfo, DataflowList, NodeInfo,
+        StopDataflowReply,
     },
     descriptor::Descriptor,
     id::{NodeId, OperatorId},
@@ -74,17 +75,17 @@ pub trait CliControl {
         node_id: NodeId,
         operator_id: Option<OperatorId>,
     ) -> Result<Uuid>;
-    async fn check(dataflow_uuid: Uuid) -> Result<ControlRequestReply>;
+    async fn check(dataflow_uuid: Uuid) -> Result<CheckDataflowReply>;
     async fn stop(
         dataflow_uuid: Uuid,
         grace_duration: Option<Duration>,
         force: bool,
-    ) -> Result<ControlRequestReply>;
+    ) -> Result<StopDataflowReply>;
     async fn stop_by_name(
         name: String,
         grace_duration: Option<Duration>,
         force: bool,
-    ) -> Result<ControlRequestReply>;
+    ) -> Result<StopDataflowReply>;
     async fn logs(
         uuid: Option<Uuid>,
         name: Option<String>,

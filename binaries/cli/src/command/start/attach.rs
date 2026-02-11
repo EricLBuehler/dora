@@ -2,7 +2,7 @@ use communication_layer_request_reply::TcpConnection;
 use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
 use dora_message::cli_to_coordinator::{CliControlClient, LegacyControlRequest};
 use dora_message::common::LogMessage;
-use dora_message::coordinator_to_cli::ControlRequestReply;
+use dora_message::coordinator_to_cli::{CheckDataflowReply, DataflowResult, StopDataflowReply};
 use dora_message::id::{NodeId, OperatorId};
 use dora_message::tarpc;
 use eyre::Context;
@@ -13,7 +13,7 @@ use std::{
     net::{SocketAddr, TcpStream},
 };
 use std::{path::PathBuf, sync::mpsc, time::Duration};
-use tracing::{error, info};
+use tracing::info;
 use uuid::Uuid;
 
 use crate::common::{handle_dataflow_result, rpc};
@@ -148,8 +148,16 @@ pub fn attach_dataflow(
     });
 
     loop {
-        let result: ControlRequestReply = match rx.recv_timeout(Duration::from_secs(1)) {
-            Err(_err) => rpc(client.check(tarpc::context::current(), dataflow_id))?,
+        let event: AttachLoopEvent = match rx.recv_timeout(Duration::from_secs(1)) {
+            Err(_err) => {
+                let check_reply = rpc(client.check(tarpc::context::current(), dataflow_id))?;
+                match check_reply {
+                    CheckDataflowReply::Running { .. } => continue,
+                    CheckDataflowReply::Stopped { uuid, result } => {
+                        AttachLoopEvent::Stopped { uuid, result }
+                    }
+                }
+            }
             Ok(AttachEvent::Reload {
                 dataflow_id,
                 node_id,
@@ -161,10 +169,12 @@ pub fn attach_dataflow(
                     node_id,
                     operator_id,
                 ))?;
-                ControlRequestReply::DataflowReloaded { uuid }
+                AttachLoopEvent::Reloaded { uuid }
             }
             Ok(AttachEvent::Stop { force }) => {
-                rpc(client.stop(tarpc::context::current(), dataflow_id, None, force))?
+                let StopDataflowReply { uuid, result } =
+                    rpc(client.stop(tarpc::context::current(), dataflow_id, None, force))?;
+                AttachLoopEvent::Stopped { uuid, result }
             }
             Ok(AttachEvent::Log(Ok(log_message))) => {
                 print_log_message(log_message, false, print_daemon_name);
@@ -176,16 +186,14 @@ pub fn attach_dataflow(
             }
         };
 
-        match result {
-            ControlRequestReply::DataflowSpawned { uuid: _ } => (),
-            ControlRequestReply::DataflowStopped { uuid, result } => {
+        match event {
+            AttachLoopEvent::Stopped { uuid, result } => {
                 info!("dataflow {uuid} stopped");
                 break handle_dataflow_result(result, Some(uuid));
             }
-            ControlRequestReply::DataflowReloaded { uuid } => {
+            AttachLoopEvent::Reloaded { uuid } => {
                 info!("dataflow {uuid} reloaded")
             }
-            other => error!("Received unexpected Coordinator Reply: {:#?}", other),
         };
     }
 }
@@ -200,4 +208,9 @@ enum AttachEvent {
         force: bool,
     },
     Log(eyre::Result<LogMessage>),
+}
+
+enum AttachLoopEvent {
+    Stopped { uuid: Uuid, result: DataflowResult },
+    Reloaded { uuid: Uuid },
 }

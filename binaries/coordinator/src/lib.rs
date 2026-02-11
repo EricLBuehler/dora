@@ -20,7 +20,9 @@ use dora_message::{
     BuildId, SessionId,
     cli_to_coordinator::{BuildRequest, CliControl},
     common::DaemonId,
-    coordinator_to_cli::{ControlRequestReply, DataflowResult, LogLevel, LogMessage},
+    coordinator_to_cli::{
+        ControlRequestReply, DataflowResult, LogLevel, LogMessage, StopDataflowReply,
+    },
     coordinator_to_daemon::{
         BuildDataflowNodes, DaemonCoordinatorEvent, RegisterResult, Timestamped,
     },
@@ -452,7 +454,7 @@ async fn start_inner(
                                 )
                                 .await;
 
-                                let reply = ControlRequestReply::DataflowStopped {
+                                let reply = StopDataflowReply {
                                     uuid,
                                     result: coordinator_state
                                         .dataflow_results
@@ -799,7 +801,7 @@ struct RunningDataflow {
     node_metrics: BTreeMap<NodeId, dora_message::daemon_to_coordinator::NodeMetrics>,
 
     spawn_result: CachedResult,
-    stop_reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
+    stop_reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<StopDataflowReply>>>,
 
     /// Buffer for log messages that were sent before there were any subscribers.
     buffered_log_messages: Vec<LogMessage>,
