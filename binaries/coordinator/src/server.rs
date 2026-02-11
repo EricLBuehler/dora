@@ -343,7 +343,6 @@ impl CliControl for ControlServer {
         }
         Ok(CliAndDefaultDaemonIps {
             default_daemon: default_daemon_ip,
-            cli: None, // filled later by the CLI
         })
     }
 

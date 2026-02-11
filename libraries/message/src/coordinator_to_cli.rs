@@ -116,5 +116,4 @@ pub struct StopDataflowReply {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct CliAndDefaultDaemonIps {
     pub default_daemon: Option<IpAddr>,
-    pub cli: Option<IpAddr>,
 }
