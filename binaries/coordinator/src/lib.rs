@@ -18,7 +18,9 @@ use dora_core::{
 };
 use dora_message::{
     BuildId, SessionId,
-    cli_to_coordinator::{BuildRequest, CliControl},
+    cli_to_coordinator::{
+        BuildRequest, CliControl, CliControlClient, CliControlRequest, CliControlResponse,
+    },
     common::DaemonId,
     coordinator_to_cli::{DataflowResult, LogLevel, LogMessage, StopDataflowReply},
     coordinator_to_daemon::{
@@ -27,7 +29,7 @@ use dora_message::{
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
     descriptor::{Descriptor, ResolvedNode},
     tarpc::{
-        self,
+        self, ClientMessage, Response, Transport, client,
         server::{BaseChannel, Channel},
         tokio_serde,
     },
@@ -61,11 +63,70 @@ mod server;
 mod state;
 mod tcp_utils;
 
+/// Start the coordinator with a TCP listener for control messages. Returns the daemon port and
+/// a future that resolves when the coordinator finishes.
 pub async fn start(
     bind: SocketAddr,
     bind_control: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
-) -> Result<(u16, u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
+) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
+    let tasks = FuturesUnordered::new();
+    let control_events = control::control_events(bind_control, &tasks)
+        .await
+        .wrap_err("failed to create control events")?;
+
+    let (daemon_port, coordinator_state, future) =
+        init_coordinator(bind, external_events, control_events, tasks).await?;
+
+    // Bind the tarpc RPC server on the same interface
+    let rpc_bind = SocketAddr::new(bind_control.ip(), bind_control.port() + 1);
+    let listener =
+        tarpc::serde_transport::tcp::listen(rpc_bind, tokio_serde::formats::Json::default)
+            .await
+            .wrap_err("failed to start tarpc server for control messages")?;
+
+    let stream = listener
+        // ignore connect errors
+        .filter_map(|c| future::ready(c.ok()))
+        .map(move |transport| serve_control_requests(transport, coordinator_state.clone()));
+    tokio::spawn(stream.for_each(|_| async {}));
+
+    Ok((daemon_port, future))
+}
+
+/// Start the coordinator with an in-process RPC server instead of a TCP listener.
+///
+/// Returns the `CliControlClient` to communicate with the RPC server.
+///
+/// This function is mainly useful for testing.
+pub async fn start_with_channel_rpc(
+    bind: SocketAddr,
+    external_events: impl Stream<Item = Event> + Unpin,
+) -> Result<(CliControlClient, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
+    let tasks = FuturesUnordered::new();
+
+    let (_daemon_port, coordinator_state, future) =
+        init_coordinator(bind, external_events, futures::stream::empty(), tasks).await?;
+
+    // Create an in-process channel-based client (no TCP overhead)
+    let (client_transport, server_transport) = tarpc::transport::channel::unbounded();
+    tokio::spawn(serve_control_requests(server_transport, coordinator_state));
+    let control_client = CliControlClient::new(client::Config::default(), client_transport).spawn();
+
+    Ok((control_client, future))
+}
+
+/// Shared coordinator setup used by both [`start`] and [`start_with_channel_rpc`].
+async fn init_coordinator(
+    bind: SocketAddr,
+    external_events: impl Stream<Item = Event> + Unpin,
+    control_events: impl Stream<Item = Event> + Unpin,
+    mut tasks: FuturesUnordered<JoinHandle<()>>,
+) -> Result<(
+    u16,
+    Arc<state::CoordinatorState>,
+    impl Future<Output = eyre::Result<()>>,
+)> {
     use tokio_stream::wrappers::TcpListenerStream;
 
     let daemon_listener = listener::create_listener(bind).await?;
@@ -78,11 +139,6 @@ pub async fn start(
             .wrap_err("failed to open connection")
             .unwrap_or_else(Event::DaemonConnectError)
     });
-
-    let mut tasks = FuturesUnordered::new();
-    let control_events = control::control_events(bind_control, &tasks)
-        .await
-        .wrap_err("failed to create control events")?;
 
     // Setup ctrl-c handler
     let ctrlc_events = set_up_ctrlc_handler()?;
@@ -103,15 +159,6 @@ pub async fn start(
     let (abortable_events, abort_handle) =
         futures::stream::abortable((events, daemon_heartbeat_interval).merge());
 
-    // Bind the tarpc RPC server on the same interface
-    let rpc_bind = SocketAddr::new(bind_control.ip(), bind_control.port() + 1);
-    let listener =
-        tarpc::serde_transport::tcp::listen(rpc_bind, tokio_serde::formats::Json::default)
-            .await
-            .wrap_err("failed to start tarpc server for control messages")?;
-
-    let rpc_port = listener.local_addr().port();
-
     let (daemon_events_tx, daemon_events) = tokio::sync::mpsc::channel(2);
     let coordinator_state = Arc::new(state::CoordinatorState {
         clock: Arc::new(HLC::default()),
@@ -125,24 +172,7 @@ pub async fn start(
         abort_handle,
     });
 
-    let tarpc_state = coordinator_state.clone();
-    let mut stream = listener
-        // ignore connect errors
-        .filter_map(|c| future::ready(c.ok()))
-        .map(BaseChannel::with_defaults)
-        .map(move |channel| {
-            let server = ControlServer {
-                state: tarpc_state.clone(),
-            };
-            channel.execute(server.serve()).for_each(|fut| async {
-                let _join_handle = tokio::spawn(fut);
-            })
-        });
-    tokio::spawn(async move {
-        while let Some(fut) = stream.next().await {
-            () = fut.await;
-        }
-    });
+    let state_for_caller = coordinator_state.clone();
 
     let future = async move {
         start_inner(abortable_events, &tasks, daemon_events, coordinator_state).await?;
@@ -156,7 +186,23 @@ pub async fn start(
         tracing::debug!("all spawned tasks finished, exiting..");
         Ok(())
     };
-    Ok((daemon_port, rpc_port, future))
+    Ok((daemon_port, state_for_caller, future))
+}
+
+/// Serve [`CliControl`] RPC requests from the given transport.
+fn serve_control_requests<T>(
+    transport: T,
+    state: Arc<state::CoordinatorState>,
+) -> impl Future<Output = ()>
+where
+    T: Transport<Response<CliControlResponse>, ClientMessage<CliControlRequest>> + Send + 'static,
+    T::Error: std::error::Error + Send + Sync + 'static,
+{
+    let channel = BaseChannel::with_defaults(transport);
+    let server = ControlServer { state };
+    channel.execute(server.serve()).for_each(|fut| async {
+        tokio::spawn(fut);
+    })
 }
 
 // Resolve the dataflow name.

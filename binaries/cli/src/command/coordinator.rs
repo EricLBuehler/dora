@@ -53,7 +53,7 @@ impl Executable for Coordinator {
         rt.block_on(async {
             let bind = SocketAddr::new(self.interface, self.port);
             let bind_control = SocketAddr::new(self.control_interface, self.control_port);
-            let (port, _rpc_port, task) =
+            let (port, task) =
                 dora_coordinator::start(bind, bind_control, futures::stream::empty::<Event>())
                     .await?;
             if !self.quiet {

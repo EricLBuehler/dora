@@ -1,13 +1,13 @@
 use dora_cli::session::DataflowSession;
 use dora_core::{
     descriptor::{DescriptorExt, read_as_descriptor},
-    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT},
+    topics::DORA_COORDINATOR_PORT_DEFAULT,
 };
 use dora_message::{
     cli_to_coordinator::{CliControlClient, StartRequest},
     common::DaemonId,
     coordinator_to_cli::DataflowIdAndName,
-    tarpc::{self, client, tokio_serde},
+    tarpc,
 };
 use dora_tracing::TracingBuilder;
 use eyre::{Context, bail};
@@ -41,29 +41,15 @@ async fn main() -> eyre::Result<()> {
         IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
         DORA_COORDINATOR_PORT_DEFAULT,
     );
-    let coordinator_control_bind = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-        DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
-    );
-    let (_daemon_port, rpc_port, coordinator) = dora_coordinator::start(
+    let (client, coordinator) = dora_coordinator::start_with_channel_rpc(
         coordinator_bind,
-        coordinator_control_bind,
         ReceiverStream::new(coordinator_events_rx),
     )
     .await?;
 
-    tracing::info!("coordinator running, rpc on {rpc_port}");
+    tracing::info!("coordinator running");
 
     let coordinator_addr = Ipv4Addr::LOCALHOST;
-
-    // Connect a tarpc client to the coordinator's RPC service.
-    let transport = tarpc::serde_transport::tcp::connect(
-        (coordinator_addr, rpc_port),
-        tokio_serde::formats::Json::default,
-    )
-    .await
-    .context("failed to connect tarpc client to coordinator")?;
-    let client = CliControlClient::new(client::Config::default(), transport).spawn();
 
     let daemon_a = run_daemon(coordinator_addr.to_string(), "A", 9843);
     let daemon_b = run_daemon(coordinator_addr.to_string(), "B", 9844);
