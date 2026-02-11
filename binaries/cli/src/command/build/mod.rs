@@ -212,13 +212,9 @@ pub async fn build_async(
         }
         BuildKind::ThroughCoordinator { coordinator_client } => {
             let coord = coordinator_socket(coordinator_addr, coordinator_port);
-            let local_working_dir = local_working_dir(
-                &dataflow_path,
-                &dataflow_descriptor,
-                &coordinator_client,
-                coord.ip(),
-            )
-            .await?;
+            let local_working_dir =
+                local_working_dir(&dataflow_path, &dataflow_descriptor, &coordinator_client)
+                    .await?;
             let build_id = build_distributed_dataflow(
                 &coordinator_client,
                 dataflow_descriptor,

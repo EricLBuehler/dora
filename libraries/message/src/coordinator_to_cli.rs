@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, net::IpAddr};
+use std::collections::BTreeMap;
 
 use uuid::Uuid;
 
@@ -111,9 +111,4 @@ pub enum CheckDataflowReply {
 pub struct StopDataflowReply {
     pub uuid: Uuid,
     pub result: DataflowResult,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct CliAndDefaultDaemonIps {
-    pub default_daemon: Option<IpAddr>,
 }

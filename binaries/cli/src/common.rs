@@ -143,14 +143,13 @@ pub(crate) async fn local_working_dir(
     dataflow_path: &Path,
     dataflow_descriptor: &Descriptor,
     client: &CliControlClient,
-    coordinator_addr: IpAddr,
 ) -> eyre::Result<Option<PathBuf>> {
     Ok(
         if dataflow_descriptor
             .nodes
             .iter()
             .all(|n| n.deploy.as_ref().map(|d| d.machine.as_ref()).is_none())
-            && cli_and_daemon_on_same_machine(client, coordinator_addr).await?
+            && cli_and_daemon_on_same_machine(client).await?
         {
             Some(
                 dunce::canonicalize(dataflow_path)
@@ -167,22 +166,8 @@ pub(crate) async fn local_working_dir(
 
 pub(crate) async fn cli_and_daemon_on_same_machine(
     client: &CliControlClient,
-    coordinator_addr: IpAddr,
 ) -> eyre::Result<bool> {
-    let result =
-        rpc(client.cli_and_default_daemon_on_same_machine(tarpc::context::current())).await?;
-
-    // Determine the CLI's outgoing IP toward the coordinator.
-    // Uses a UDP socket to query the OS routing table (no packets sent).
-    let cli_ip = std::net::UdpSocket::bind("0.0.0.0:0")
-        .and_then(|s| {
-            s.connect((coordinator_addr, 1))?;
-            s.local_addr()
-        })
-        .ok()
-        .map(|a| a.ip());
-
-    Ok(result.default_daemon.is_some() && result.default_daemon == cli_ip)
+    rpc(client.cli_and_default_daemon_on_same_machine(tarpc::context::current())).await
 }
 
 pub(crate) fn write_events_to() -> Option<PathBuf> {

@@ -128,13 +128,7 @@ async fn start_dataflow(
         .await
         .wrap_err("failed to connect to dora coordinator")?;
 
-    let local_working_dir = local_working_dir(
-        &dataflow,
-        &dataflow_descriptor,
-        &client,
-        coordinator_socket.ip(),
-    )
-    .await?;
+    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &client).await?;
 
     let dataflow_id = rpc(client.start(
         tarpc::context::current(),

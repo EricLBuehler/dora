@@ -6,9 +6,8 @@ use dora_message::{
     cli_to_coordinator::{BuildRequest, CliControl, StartRequest},
     common::DaemonId,
     coordinator_to_cli::{
-        CheckDataflowReply, CliAndDefaultDaemonIps, DataflowIdAndName, DataflowInfo, DataflowList,
-        DataflowListEntry, DataflowResult, DataflowStatus, NodeInfo, NodeMetricsInfo,
-        StopDataflowReply,
+        CheckDataflowReply, DataflowIdAndName, DataflowInfo, DataflowList, DataflowListEntry,
+        DataflowResult, DataflowStatus, NodeInfo, NodeMetricsInfo, StopDataflowReply,
     },
     tarpc::context::Context,
 };
@@ -332,19 +331,23 @@ impl CliControl for ControlServer {
     async fn cli_and_default_daemon_on_same_machine(
         self,
         _context: Context,
-    ) -> Result<CliAndDefaultDaemonIps, String> {
-        let mut default_daemon_ip = None;
-        if let Some(default_id) = self.state.daemon_connections.unnamed().next() {
-            if let Some(stream) = self.state.daemon_connections.get_stream(&default_id) {
-                let stream = stream.lock().await;
-                if let Ok(addr) = stream.peer_addr() {
-                    default_daemon_ip = Some(addr.ip());
-                }
-            }
-        }
-        Ok(CliAndDefaultDaemonIps {
-            default_daemon: default_daemon_ip,
-        })
+    ) -> Result<bool, String> {
+        let Some(cli_ip) = self.client_ip else {
+            return Ok(false);
+        };
+        let Some(default_id) = self.state.daemon_connections.unnamed().next() else {
+            return Ok(false);
+        };
+        let Some(stream) = self.state.daemon_connections.get_stream(&default_id) else {
+            return Ok(false);
+        };
+        let stream = stream.lock().await;
+        let same = stream
+            .peer_addr()
+            .ok()
+            .map(|addr| addr.ip() == cli_ip)
+            .unwrap_or(false);
+        Ok(same)
     }
 
     async fn get_node_info(self, _context: Context) -> Result<Vec<NodeInfo>, String> {
