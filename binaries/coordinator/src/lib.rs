@@ -1,5 +1,4 @@
 use crate::{
-    run::spawn_dataflow,
     server::ControlServer,
     tcp_utils::{tcp_receive, tcp_send},
 };
@@ -39,7 +38,7 @@ use futures::{Future, Stream, StreamExt, future, stream::FuturesUnordered};
 use futures_concurrency::stream::Merge;
 use itertools::Itertools;
 use log_subscriber::LogSubscriber;
-use run::SpawnedDataflow;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::SocketAddr,
@@ -1230,45 +1229,69 @@ async fn start_dataflow(
     name: Option<String>,
     daemon_connections: &DaemonConnections,
     clock: &HLC,
+    running_dataflows: &DashMap<Uuid, RunningDataflow>,
     uv: bool,
     write_events_to: Option<PathBuf>,
-) -> eyre::Result<RunningDataflow> {
-    let SpawnedDataflow {
-        uuid,
-        daemons,
-        nodes,
-        node_to_daemon,
-    } = spawn_dataflow(
+) -> eyre::Result<Uuid> {
+    let plan = run::plan_dataflow(
         build_id,
         session_id,
-        dataflow.clone(),
+        &dataflow,
         local_working_dir,
         daemon_connections,
         clock,
         uv,
         write_events_to,
-    )
-    .await?;
-    Ok(RunningDataflow {
-        uuid,
-        name,
-        descriptor: dataflow,
-        pending_daemons: if daemons.len() > 1 {
-            daemons.clone()
-        } else {
-            BTreeSet::new()
-        },
-        exited_before_subscribe: Default::default(),
-        daemons: daemons.clone(),
+    )?;
+
+    let uuid = plan.uuid;
+    let daemons = plan.daemons.clone();
+
+    let run::DataflowPlan {
+        uuid: _,
+        daemons: _,
         nodes,
         node_to_daemon,
-        node_metrics: BTreeMap::new(),
-        spawn_result: CachedResult::default(),
-        stop_reply_senders: Vec::new(),
-        buffered_log_messages: Vec::new(),
-        log_subscribers: Vec::new(),
-        pending_spawn_results: daemons,
-    })
+        daemon_messages,
+    } = plan;
+
+    // Insert the RunningDataflow into the map BEFORE sending spawn commands to
+    // the daemons.  This avoids a race where the daemon finishes spawning
+    // and sends the SpawnResult back before start_dataflow returns — if the
+    // entry isn't in the map yet, the coordinator event loop would discard
+    // the result and `wait_for_spawn` would time out.
+    running_dataflows.insert(
+        uuid,
+        RunningDataflow {
+            uuid,
+            name,
+            descriptor: dataflow,
+            pending_daemons: if daemons.len() > 1 {
+                daemons.clone()
+            } else {
+                BTreeSet::new()
+            },
+            exited_before_subscribe: Default::default(),
+            daemons: daemons.clone(),
+            nodes,
+            node_to_daemon,
+            node_metrics: BTreeMap::new(),
+            spawn_result: CachedResult::default(),
+            stop_reply_senders: Vec::new(),
+            buffered_log_messages: Vec::new(),
+            log_subscribers: Vec::new(),
+            pending_spawn_results: daemons,
+        },
+    );
+
+    // Now send the spawn commands.  If a result arrives quickly, the entry is
+    // already in the map so the event loop won't discard it.
+    if let Err(err) = run::execute_dataflow_plan(uuid, &daemon_messages, daemon_connections).await {
+        running_dataflows.remove(&uuid);
+        return Err(err);
+    }
+
+    Ok(uuid)
 }
 
 async fn destroy_daemon(

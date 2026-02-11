@@ -134,7 +134,7 @@ impl CliControl for ControlServer {
                 ));
             }
         }
-        let dataflow = start_dataflow(
+        let uuid = start_dataflow(
             build_id,
             session_id,
             dataflow,
@@ -142,14 +142,13 @@ impl CliControl for ControlServer {
             name,
             &self.state.daemon_connections,
             &self.state.clock,
+            &self.state.running_dataflows,
             uv,
             write_events_to,
         )
         .await
         .map_err(err_to_string)?;
 
-        let uuid = dataflow.uuid;
-        self.state.running_dataflows.insert(uuid, dataflow);
         Ok(uuid)
     }
 
