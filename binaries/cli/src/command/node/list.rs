@@ -40,11 +40,11 @@ pub struct List {
 }
 
 impl Executable for List {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let client = self.coordinator.connect_rpc()?;
-        list(&client, self.dataflow, self.format)
+        let client = self.coordinator.connect_rpc().await?;
+        list(&client, self.dataflow, self.format).await
     }
 }
 
@@ -59,13 +59,13 @@ struct OutputEntry {
     dataflow: Option<String>,
 }
 
-fn list(
+async fn list(
     client: &CliControlClient,
     dataflow_filter: Option<String>,
     format: OutputFormat,
 ) -> eyre::Result<()> {
     // Request node information from coordinator
-    let node_infos = rpc(client.get_node_info(tarpc::context::current()))?;
+    let node_infos = rpc(client.get_node_info(tarpc::context::current())).await?;
 
     // Filter by dataflow if specified
     let filtered_nodes: Vec<NodeInfo> = if let Some(ref filter) = dataflow_filter {

@@ -60,12 +60,12 @@ pub struct Start {
 }
 
 impl Executable for Start {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
         let coordinator_socket: SocketAddr = (self.coordinator_addr, self.coordinator_port).into();
 
         let (dataflow, dataflow_descriptor, client, dataflow_id) =
-            start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv)?;
+            start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv).await?;
 
         let attach = match (self.attach, self.detach) {
             (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
@@ -92,7 +92,7 @@ impl Executable for Start {
                 self.hot_reload,
                 coordinator_socket,
                 log_level,
-            )
+            ).await
         } else {
             let print_daemon_name = dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some());
             // wait until dataflow is started
@@ -102,24 +102,25 @@ impl Executable for Start {
                 coordinator_socket,
                 log::LevelFilter::Info,
                 print_daemon_name,
-            )
+            ).await
         }
     }
 }
 
-fn start_dataflow(
+async fn start_dataflow(
     dataflow: String,
     name: Option<String>,
     coordinator_socket: SocketAddr,
     uv: bool,
 ) -> Result<(PathBuf, Descriptor, CliControlClient, Uuid), eyre::Error> {
-    let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
+    let dataflow = resolve_dataflow(dataflow).await.context("could not resolve dataflow")?;
     let dataflow_descriptor =
         Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
     let dataflow_session =
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
 
     let client = connect_to_coordinator_rpc(coordinator_socket.ip(), coordinator_socket.port())
+        .await
         .wrap_err("failed to connect to dora coordinator")?;
 
     let local_working_dir = local_working_dir(
@@ -127,7 +128,7 @@ fn start_dataflow(
         &dataflow_descriptor,
         &client,
         coordinator_socket.ip(),
-    )?;
+    ).await?;
 
     let dataflow_id = rpc(client.start(
         tarpc::context::current(),
@@ -140,13 +141,14 @@ fn start_dataflow(
             uv,
             write_events_to: write_events_to(),
         },
-    ))?;
+    ))
+    .await?;
     eprintln!("dataflow start triggered: {dataflow_id}");
 
     Ok((dataflow, dataflow_descriptor, client, dataflow_id))
 }
 
-fn wait_until_dataflow_started(
+async fn wait_until_dataflow_started(
     dataflow_id: Uuid,
     client: &CliControlClient,
     coordinator_addr: SocketAddr,
@@ -182,7 +184,7 @@ fn wait_until_dataflow_started(
         }
     });
 
-    rpc(client.wait_for_spawn(tarpc::context::current(), dataflow_id))?;
+    rpc(client.wait_for_spawn(tarpc::context::current(), dataflow_id)).await?;
     eprintln!("dataflow started: {dataflow_id}");
 
     Ok(())

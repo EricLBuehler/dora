@@ -126,8 +126,8 @@ enum Lang {
     Cxx,
 }
 
-pub fn lib_main(args: Args) {
-    if let Err(err) = args.command.execute() {
+pub async fn lib_main(args: Args) {
+    if let Err(err) = args.command.execute().await {
         eprintln!("\n\n{}", "[ERROR]".bold().red());
         eprintln!("{err:?}");
         std::process::exit(1);
@@ -151,7 +151,13 @@ fn py_main(_py: Python) -> PyResult<()> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
 
     match Args::try_parse_from(args) {
-        Ok(args) => lib_main(args),
+        Ok(args) => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("failed to create tokio runtime");
+            rt.block_on(lib_main(args));
+        }
         Err(err) => {
             eprintln!("{err}");
         }

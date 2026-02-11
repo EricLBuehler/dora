@@ -10,9 +10,9 @@ pub enum System {
 }
 
 impl Executable for System {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         match self {
-            System::Status(args) => args.execute(),
+            System::Status(args) => args.execute().await,
         }
     }
 }

@@ -23,10 +23,10 @@ pub struct DataflowSelector {
 }
 
 impl DataflowSelector {
-    pub fn resolve(&self, client: &CliControlClient) -> eyre::Result<(Uuid, Descriptor)> {
+    pub async fn resolve(&self, client: &CliControlClient) -> eyre::Result<(Uuid, Descriptor)> {
         let dataflow_id =
-            resolve_dataflow_identifier_interactive(client, self.dataflow.as_deref())?;
-        let info = rpc(client.info(tarpc::context::current(), dataflow_id))?;
+            resolve_dataflow_identifier_interactive(client, self.dataflow.as_deref()).await?;
+        let info = rpc(client.info(tarpc::context::current(), dataflow_id)).await?;
         Ok((dataflow_id, info.descriptor))
     }
 }
@@ -53,11 +53,11 @@ impl fmt::Display for TopicIdentifier {
 }
 
 impl TopicSelector {
-    pub fn resolve(
+    pub async fn resolve(
         &self,
         client: &CliControlClient,
     ) -> eyre::Result<(DataflowId, BTreeSet<TopicIdentifier>)> {
-        let (dataflow_id, dataflow_descriptor) = self.dataflow.resolve(client)?;
+        let (dataflow_id, dataflow_descriptor) = self.dataflow.resolve(client).await?;
         if !dataflow_descriptor.debug.publish_all_messages_to_zenoh {
             bail!(
                 "Dataflow `{dataflow_id}` does not have `publish_all_messages_to_zenoh` enabled. You should enable it in order to inspect data.\n\

@@ -50,7 +50,7 @@ pub struct Top {
 }
 
 impl Executable for Top {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
         // Setup terminal
@@ -67,7 +67,7 @@ impl Executable for Top {
             self.coordinator_addr,
             self.coordinator_port,
             refresh_duration,
-        );
+        ).await;
 
         // Restore terminal
         disable_raw_mode()?;
@@ -246,7 +246,7 @@ impl App {
     }
 }
 
-fn run_app<B: Backend>(
+async fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     coordinator_addr: std::net::IpAddr,
     coordinator_port: u16,
@@ -258,10 +258,11 @@ fn run_app<B: Backend>(
 
     // Reuse coordinator connection
     let client = connect_to_coordinator_rpc(coordinator_addr, coordinator_port)
+        .await
         .wrap_err("Failed to connect to coordinator")?;
 
     // Query node info once initially
-    node_infos = rpc(client.get_node_info(tarpc::context::current()))?;
+    node_infos = rpc(client.get_node_info(tarpc::context::current())).await?;
 
     loop {
         terminal.draw(|f| ui(f, &mut app, refresh_duration))?;
@@ -307,7 +308,7 @@ fn run_app<B: Backend>(
         // Update data if refresh interval has passed
         if last_update.elapsed() >= refresh_duration {
             // Query node info every refresh interval to get updated metrics
-            node_infos = rpc(client.get_node_info(tarpc::context::current()))?;
+            node_infos = rpc(client.get_node_info(tarpc::context::current())).await?;
 
             // Update stats with current node info
             app.update_stats(node_infos.clone());

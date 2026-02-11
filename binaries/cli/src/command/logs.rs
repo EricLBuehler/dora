@@ -43,12 +43,13 @@ pub struct LogsArgs {
 }
 
 impl Executable for LogsArgs {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
         let client = connect_to_coordinator_rpc(self.coordinator_addr, self.coordinator_port)
+            .await
             .wrap_err("failed to connect to dora coordinator")?;
-        let uuid = resolve_dataflow_identifier_interactive(&client, self.dataflow.as_deref())?;
+        let uuid = resolve_dataflow_identifier_interactive(&client, self.dataflow.as_deref()).await?;
         logs(
             &client,
             uuid,
@@ -56,11 +57,11 @@ impl Executable for LogsArgs {
             self.tail,
             self.follow,
             (self.coordinator_addr, self.coordinator_port).into(),
-        )
+        ).await
     }
 }
 
-pub fn logs(
+pub async fn logs(
     client: &CliControlClient,
     uuid: Uuid,
     node: dora_message::id::NodeId,
@@ -74,7 +75,7 @@ pub fn logs(
         None,
         node.to_string(),
         tail,
-    ))?;
+    )).await?;
 
     std::io::stdout()
         .write_all(&logs)

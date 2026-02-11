@@ -40,13 +40,14 @@ pub struct ListArgs {
 }
 
 impl Executable for ListArgs {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
         let client = connect_to_coordinator_rpc(self.coordinator_addr, self.coordinator_port)
+            .await
             .map_err(|_| eyre!("Failed to connect to coordinator"))?;
 
-        list(&client, self.format, self.status, self.name, self.sort_by)
+        list(&client, self.format, self.status, self.name, self.sort_by).await
     }
 }
 
@@ -67,17 +68,17 @@ struct DataflowMetrics {
     total_memory_mb: f64,
 }
 
-fn list(
+async fn list(
     client: &CliControlClient,
     format: OutputFormat,
     status_filter: Option<String>,
     name_filter: Option<String>,
     sort_by: Option<String>,
 ) -> Result<(), eyre::ErrReport> {
-    let list = query_running_dataflows(client)?;
+    let list = query_running_dataflows(client).await?;
 
     // Get node information via tarpc
-    let node_infos = rpc(client.get_node_info(tarpc::context::current()))?;
+    let node_infos = rpc(client.get_node_info(tarpc::context::current())).await?;
 
     // Aggregate metrics by dataflow UUID
     let mut dataflow_metrics: std::collections::BTreeMap<Uuid, DataflowMetrics> =

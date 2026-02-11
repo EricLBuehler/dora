@@ -89,7 +89,7 @@ pub struct Build {
 }
 
 impl Executable for Build {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
         build(
             self.dataflow,
@@ -97,18 +97,18 @@ impl Executable for Build {
             self.coordinator_port,
             self.uv,
             self.local,
-        )
+        ).await
     }
 }
 
-pub fn build(
+pub async fn build(
     dataflow: String,
     coordinator_addr: Option<IpAddr>,
     coordinator_port: Option<u16>,
     uv: bool,
     force_local: bool,
 ) -> eyre::Result<()> {
-    let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
+    let dataflow_path = resolve_dataflow(dataflow).await.context("could not resolve dataflow")?;
     let dataflow_descriptor =
         Descriptor::blocking_read(&dataflow_path).wrap_err("Failed to read yaml dataflow")?;
     let mut dataflow_session =
@@ -142,10 +142,10 @@ pub fn build(
         log::info!("Building through coordinator, using the given coordinator socket information");
         // explicit coordinator address or port set -> there should be a coordinator running
         BuildKind::ThroughCoordinator {
-            coordinator_client: session().context("failed to connect to coordinator")?,
+            coordinator_client: session().await.context("failed to connect to coordinator")?,
         }
     } else {
-        match session() {
+        match session().await {
             Ok(coordinator_client) => {
                 // we found a local coordinator instance at default port -> use it for building
                 log::info!("Found local dora coordinator instance -> building through coordinator");
@@ -174,7 +174,8 @@ pub fn build(
                 &dataflow_session,
                 local_working_dir,
                 uv,
-            )?;
+            )
+            .await?;
 
             dataflow_session.git_sources = git_sources;
             // generate a random BuildId and store the associated build info
@@ -191,7 +192,7 @@ pub fn build(
                 &dataflow_descriptor,
                 &coordinator_client,
                 coord.ip(),
-            )?;
+            ).await?;
             let build_id = build_distributed_dataflow(
                 &coordinator_client,
                 dataflow_descriptor,
@@ -199,7 +200,7 @@ pub fn build(
                 &dataflow_session,
                 local_working_dir,
                 uv,
-            )?;
+            ).await?;
 
             dataflow_session.git_sources = git_sources;
             dataflow_session
@@ -213,7 +214,7 @@ pub fn build(
                 &coordinator_client,
                 coordinator_socket(coordinator_addr, coordinator_port),
                 log::LevelFilter::Info,
-            )?;
+            ).await?;
 
             dataflow_session.build_id = Some(build_id);
             dataflow_session.local_build = None;
@@ -233,13 +234,13 @@ enum BuildKind {
     },
 }
 
-fn connect_to_coordinator_rpc_with_defaults(
+async fn connect_to_coordinator_rpc_with_defaults(
     coordinator_addr: Option<std::net::IpAddr>,
     coordinator_port: Option<u16>,
 ) -> eyre::Result<CliControlClient> {
     let addr = coordinator_addr.unwrap_or(LOCALHOST);
     let control_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
-    connect_to_coordinator_rpc(addr, control_port)
+    connect_to_coordinator_rpc(addr, control_port).await
 }
 
 fn coordinator_socket(

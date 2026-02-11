@@ -16,7 +16,7 @@ use std::{
 use std::{net::IpAddr, path::PathBuf};
 use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
 
-pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
+pub async fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     let mut error_occurred = false;
 
     let color_choice = if std::io::stdout().is_terminal() {
@@ -27,7 +27,7 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     let mut stdout = termcolor::StandardStream::stdout(color_choice);
 
     // Coordinator status
-    let client = match connect_to_coordinator_rpc(coordinator_addr.ip(), coordinator_addr.port()) {
+    let client = match connect_to_coordinator_rpc(coordinator_addr.ip(), coordinator_addr.port()).await {
         Ok(client) => {
             let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
             write!(stdout, "✓ ")?;
@@ -52,7 +52,10 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     };
 
     // Daemon status
-    let daemon_running_result = client.as_ref().map(daemon_running).transpose()?;
+    let daemon_running_result = match client.as_ref() {
+        Some(c) => Some(daemon_running(c).await?),
+        None => None,
+    };
 
     if daemon_running_result == Some(true) {
         let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
@@ -75,7 +78,7 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
 
     // Dataflow count
     if let Some(ref c) = client {
-        if let Ok(count) = query_running_dataflow_count(c) {
+        if let Ok(count) = query_running_dataflow_count(c).await {
             writeln!(stdout, "Active dataflows: {}", count)?;
         }
     }
@@ -87,12 +90,12 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     Ok(())
 }
 
-pub fn daemon_running(client: &CliControlClient) -> Result<bool, eyre::ErrReport> {
-    rpc(client.daemon_connected(tarpc::context::current()))
+pub async fn daemon_running(client: &CliControlClient) -> Result<bool, eyre::ErrReport> {
+    rpc(client.daemon_connected(tarpc::context::current())).await
 }
 
-fn query_running_dataflow_count(client: &CliControlClient) -> Result<usize, eyre::ErrReport> {
-    let list = rpc(client.list(tarpc::context::current()))?;
+async fn query_running_dataflow_count(client: &CliControlClient) -> Result<usize, eyre::ErrReport> {
+    let list = rpc(client.list(tarpc::context::current())).await?;
     Ok(list
         .0
         .iter()
@@ -114,7 +117,7 @@ pub struct Status {
 }
 
 impl Executable for Status {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
         match self.dataflow {
@@ -126,9 +129,9 @@ impl Executable for Status {
                     .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                     .to_owned();
                 Descriptor::blocking_read(&dataflow)?.check(&working_dir)?;
-                check_environment((self.coordinator_addr, self.coordinator_port).into())?
+                check_environment((self.coordinator_addr, self.coordinator_port).into()).await?
             }
-            None => check_environment((self.coordinator_addr, self.coordinator_port).into())?,
+            None => check_environment((self.coordinator_addr, self.coordinator_port).into()).await?,
         }
 
         Ok(())

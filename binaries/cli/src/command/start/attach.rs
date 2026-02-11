@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::common::{handle_dataflow_result, rpc};
 use crate::output::print_log_message;
 
-pub fn attach_dataflow(
+pub async fn attach_dataflow(
     dataflow: Descriptor,
     dataflow_path: PathBuf,
     dataflow_id: Uuid,
@@ -150,7 +150,7 @@ pub fn attach_dataflow(
     loop {
         let event: AttachLoopEvent = match rx.recv_timeout(Duration::from_secs(1)) {
             Err(_err) => {
-                let check_reply = rpc(client.check(tarpc::context::current(), dataflow_id))?;
+                let check_reply = rpc(client.check(tarpc::context::current(), dataflow_id)).await?;
                 match check_reply {
                     CheckDataflowReply::Running { .. } => continue,
                     CheckDataflowReply::Stopped { uuid, result } => {
@@ -168,12 +168,12 @@ pub fn attach_dataflow(
                     dataflow_id,
                     node_id,
                     operator_id,
-                ))?;
+                )).await?;
                 AttachLoopEvent::Reloaded { uuid }
             }
             Ok(AttachEvent::Stop { force }) => {
                 let StopDataflowReply { uuid, result } =
-                    rpc(client.stop(tarpc::context::current(), dataflow_id, None, force))?;
+                    rpc(client.stop(tarpc::context::current(), dataflow_id, None, force)).await?;
                 AttachLoopEvent::Stopped { uuid, result }
             }
             Ok(AttachEvent::Log(Ok(log_message))) => {

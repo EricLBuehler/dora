@@ -19,65 +19,65 @@ pub struct Up {
 }
 
 impl Executable for Up {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        up(self.config.as_deref())
+        up(self.config.as_deref()).await
     }
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct UpConfig {}
 
-pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
+pub(crate) async fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
     let coordinator_addr = LOCALHOST;
     let control_port = DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-    let client = match connect_to_coordinator_rpc(coordinator_addr, control_port) {
+    let client = match connect_to_coordinator_rpc(coordinator_addr, control_port).await {
         Ok(client) => client,
         Err(_) => {
             start_coordinator().wrap_err("failed to start dora-coordinator")?;
 
             loop {
-                match connect_to_coordinator_rpc(coordinator_addr, control_port) {
+                match connect_to_coordinator_rpc(coordinator_addr, control_port).await {
                     Ok(client) => break client,
                     Err(_) => {
                         // sleep a bit until the coordinator accepts connections
-                        std::thread::sleep(Duration::from_millis(50));
+                        tokio::time::sleep(Duration::from_millis(50)).await;
                     }
                 }
             }
         }
     };
 
-    if !daemon_running(&client)? {
+    if !daemon_running(&client).await? {
         start_daemon().wrap_err("failed to start dora-daemon")?;
 
         // wait a bit until daemon is connected
         let mut i = 0;
         const WAIT_S: f32 = 0.1;
         loop {
-            if daemon_running(&client)? {
+            if daemon_running(&client).await? {
                 break;
             }
             i += 1;
             if i > 20 {
                 eyre::bail!("daemon not connected after {}s", WAIT_S * i as f32);
             }
-            std::thread::sleep(Duration::from_secs_f32(WAIT_S));
+            tokio::time::sleep(Duration::from_secs_f32(WAIT_S)).await;
         }
     }
 
     Ok(())
 }
 
-pub(crate) fn destroy(
+pub(crate) async fn destroy(
     config_path: Option<&Path>,
     coordinator_addr: SocketAddr,
 ) -> Result<(), eyre::ErrReport> {
     let UpConfig {} = parse_dora_config(config_path)?;
-    match connect_to_coordinator_rpc(coordinator_addr.ip(), coordinator_addr.port()) {
+    match connect_to_coordinator_rpc(coordinator_addr.ip(), coordinator_addr.port()).await {
         Ok(client) => {
-            rpc(client.destroy(tarpc::context::current()))?;
+            rpc(client.destroy(tarpc::context::current())).await?;
             println!("Coordinator and daemons destroyed successfully");
         }
         Err(_) => {

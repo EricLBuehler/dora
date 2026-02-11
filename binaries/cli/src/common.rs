@@ -15,37 +15,18 @@ use std::{
     future::Future,
     net::IpAddr,
     path::{Path, PathBuf},
-    sync::OnceLock,
 };
-use tokio::runtime::Builder;
 use uuid::Uuid;
-
-/// A persistent Tokio runtime shared across all `block_on` calls.
-///
-/// tarpc's client `.spawn()` creates background tasks via `tokio::spawn`.
-/// These tasks must stay alive for the client to function, so we need a
-/// runtime that outlives any single `block_on` call.
-static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-
-/// Run a future to completion, reusing the persistent CLI runtime.
-pub(crate) fn block_on<F: Future>(f: F) -> F::Output {
-    let rt = RUNTIME.get_or_init(|| {
-        Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to create tokio runtime")
-    });
-    rt.block_on(f)
-}
 
 /// Call a tarpc RPC method, unwrapping the two Result layers:
 ///
 /// 1. Transport-level error (e.g. `RpcError`)
 /// 2. `Result<T, String>` from the application (coordinator) layer
-pub(crate) fn rpc<T, E: std::error::Error + Send + Sync + 'static>(
+pub(crate) async fn rpc<T, E: std::error::Error + Send + Sync + 'static>(
     future: impl Future<Output = Result<Result<T, String>, E>>,
 ) -> eyre::Result<T> {
-    block_on(future)
+    future
+        .await
         .context("RPC transport error")?
         .map_err(|e| eyre::eyre!(e))
 }
@@ -68,11 +49,13 @@ pub(crate) fn handle_dataflow_result(
     }
 }
 
-pub(crate) fn query_running_dataflows(client: &CliControlClient) -> eyre::Result<DataflowList> {
-    rpc(client.list(tarpc::context::current()))
+pub(crate) async fn query_running_dataflows(
+    client: &CliControlClient,
+) -> eyre::Result<DataflowList> {
+    rpc(client.list(tarpc::context::current())).await
 }
 
-pub(crate) fn resolve_dataflow_identifier_interactive(
+pub(crate) async fn resolve_dataflow_identifier_interactive(
     client: &CliControlClient,
     name_or_uuid: Option<&str>,
 ) -> eyre::Result<Uuid> {
@@ -80,7 +63,9 @@ pub(crate) fn resolve_dataflow_identifier_interactive(
         return Ok(uuid);
     }
 
-    let list = query_running_dataflows(client).wrap_err("failed to query running dataflows")?;
+    let list = query_running_dataflows(client)
+        .await
+        .wrap_err("failed to query running dataflows")?;
     let active: Vec<dora_message::coordinator_to_cli::DataflowIdAndName> = list.get_active();
     if let Some(name) = name_or_uuid {
         let Some(dataflow) = active.iter().find(|it| it.name.as_deref() == Some(name)) else {
@@ -110,43 +95,33 @@ pub(crate) struct CoordinatorOptions {
 }
 
 impl CoordinatorOptions {
-    pub fn connect_rpc(&self) -> eyre::Result<CliControlClient> {
-        connect_to_coordinator_rpc(self.coordinator_addr, self.coordinator_port)
+    pub async fn connect_rpc(&self) -> eyre::Result<CliControlClient> {
+        connect_to_coordinator_rpc(self.coordinator_addr, self.coordinator_port).await
     }
 }
 
 /// Connect to the coordinator's tarpc RPC service.
 ///
 /// The RPC port is conventionally `control_port + 1`.
-pub(crate) fn connect_to_coordinator_rpc(
+pub(crate) async fn connect_to_coordinator_rpc(
     addr: IpAddr,
     control_port: u16,
 ) -> eyre::Result<CliControlClient> {
     let rpc_port = control_port + 1;
-    let client = block_on(async {
-        let transport = tarpc::serde_transport::tcp::connect(
-            (addr, rpc_port),
-            tokio_serde::formats::Json::default,
-        )
-        .await
-        .context("failed to connect tarpc client to coordinator")?;
-        // `.spawn()` requires a running Tokio runtime, so it must be
-        // called inside the async block driven by `block_on`.
-        let client = CliControlClient::new(client::Config::default(), transport).spawn();
-        Ok::<_, eyre::Error>(client)
-    })?;
+    let transport =
+        tarpc::serde_transport::tcp::connect((addr, rpc_port), tokio_serde::formats::Json::default)
+            .await
+            .context("failed to connect tarpc client to coordinator")?;
+    let client = CliControlClient::new(client::Config::default(), transport).spawn();
     Ok(client)
 }
 
-pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
+pub(crate) async fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
     let dataflow = if source_is_url(&dataflow) {
         // try to download the shared library
         let target_path = current_dir().context("Could not access the current dir")?;
-        let rt = Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("tokio runtime failed")?;
-        rt.block_on(async { download_file(&dataflow, &target_path).await })
+        download_file(&dataflow, &target_path)
+            .await
             .wrap_err("failed to download dataflow yaml file")?
     } else {
         PathBuf::from(dataflow)
@@ -154,7 +129,7 @@ pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
     Ok(dataflow)
 }
 
-pub(crate) fn local_working_dir(
+pub(crate) async fn local_working_dir(
     dataflow_path: &Path,
     dataflow_descriptor: &Descriptor,
     client: &CliControlClient,
@@ -165,7 +140,7 @@ pub(crate) fn local_working_dir(
             .nodes
             .iter()
             .all(|n| n.deploy.as_ref().map(|d| d.machine.as_ref()).is_none())
-            && cli_and_daemon_on_same_machine(client, coordinator_addr)?
+            && cli_and_daemon_on_same_machine(client, coordinator_addr).await?
         {
             Some(
                 dunce::canonicalize(dataflow_path)
@@ -180,11 +155,12 @@ pub(crate) fn local_working_dir(
     )
 }
 
-pub(crate) fn cli_and_daemon_on_same_machine(
+pub(crate) async fn cli_and_daemon_on_same_machine(
     client: &CliControlClient,
     coordinator_addr: IpAddr,
 ) -> eyre::Result<bool> {
-    let result = rpc(client.cli_and_default_daemon_on_same_machine(tarpc::context::current()))?;
+    let result =
+        rpc(client.cli_and_default_daemon_on_same_machine(tarpc::context::current())).await?;
 
     // Determine the CLI's outgoing IP toward the coordinator.
     // Uses a UDP socket to query the OS routing table (no packets sent).

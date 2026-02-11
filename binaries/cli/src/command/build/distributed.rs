@@ -17,7 +17,7 @@ use crate::common::rpc;
 use crate::output::print_log_message;
 use crate::session::DataflowSession;
 
-pub fn build_distributed_dataflow(
+pub async fn build_distributed_dataflow(
     client: &CliControlClient,
     dataflow: Descriptor,
     git_sources: &BTreeMap<NodeId, GitSource>,
@@ -35,12 +35,12 @@ pub fn build_distributed_dataflow(
             local_working_dir,
             uv,
         },
-    ))?;
+    )).await?;
     eprintln!("dataflow build triggered: {build_id}");
     Ok(build_id)
 }
 
-pub fn wait_until_dataflow_built(
+pub async fn wait_until_dataflow_built(
     build_id: BuildId,
     client: &CliControlClient,
     coordinator_socket: SocketAddr,
@@ -75,7 +75,7 @@ pub fn wait_until_dataflow_built(
         }
     });
 
-    rpc(client.wait_for_build(tarpc::context::current(), build_id))?;
+    rpc(client.wait_for_build(tarpc::context::current(), build_id)).await?;
     eprintln!("dataflow build finished successfully");
     Ok(build_id)
 }

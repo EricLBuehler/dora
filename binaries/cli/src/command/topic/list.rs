@@ -35,10 +35,10 @@ pub struct List {
     coordinator: CoordinatorOptions,
 }
 impl Executable for List {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        list(self.coordinator, self.selector, self.format)
+        list(self.coordinator, self.selector, self.format).await
     }
 }
 
@@ -49,13 +49,13 @@ struct OutputEntry {
     subscribers: Vec<String>,
 }
 
-fn list(
+async fn list(
     coordinator: CoordinatorOptions,
     selector: DataflowSelector,
     format: OutputFormat,
 ) -> eyre::Result<()> {
-    let client = coordinator.connect_rpc()?;
-    let (_dataflow_id, descriptor) = selector.resolve(&client)?;
+    let client = coordinator.connect_rpc().await?;
+    let (_dataflow_id, descriptor) = selector.resolve(&client).await?;
 
     let mut subscribers = BTreeMap::<(&NodeId, &DataId), Vec<(&NodeId, &DataId)>>::new();
     for node in &descriptor.nodes {

@@ -48,55 +48,56 @@ pub struct Stop {
 }
 
 impl Executable for Stop {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
         let client = connect_to_coordinator_rpc(self.coordinator_addr, self.coordinator_port)
+            .await
             .wrap_err("could not connect to dora coordinator")?;
         match (self.uuid, self.name) {
-            (Some(uuid), _) => stop_dataflow(uuid, self.grace_duration, self.force, &client),
+            (Some(uuid), _) => stop_dataflow(uuid, self.grace_duration, self.force, &client).await,
             (None, Some(name)) => {
-                stop_dataflow_by_name(name, self.grace_duration, self.force, &client)
+                stop_dataflow_by_name(name, self.grace_duration, self.force, &client).await
             }
-            (None, None) => stop_dataflow_interactive(self.grace_duration, self.force, &client),
+            (None, None) => stop_dataflow_interactive(self.grace_duration, self.force, &client).await,
         }
     }
 }
 
-fn stop_dataflow_interactive(
+async fn stop_dataflow_interactive(
     grace_duration: Option<Duration>,
     force: bool,
     client: &CliControlClient,
 ) -> eyre::Result<()> {
-    let list = query_running_dataflows(client).wrap_err("failed to query running dataflows")?;
+    let list = query_running_dataflows(client).await.wrap_err("failed to query running dataflows")?;
     let active = list.get_active();
     if active.is_empty() {
         eprintln!("No dataflows are running");
     } else {
         let selection = inquire::Select::new("Choose dataflow to stop:", active).prompt()?;
-        stop_dataflow(selection.uuid, grace_duration, force, client)?;
+        stop_dataflow(selection.uuid, grace_duration, force, client).await?;
     }
 
     Ok(())
 }
 
-fn stop_dataflow(
+async fn stop_dataflow(
     uuid: Uuid,
     grace_duration: Option<Duration>,
     force: bool,
     client: &CliControlClient,
 ) -> Result<(), eyre::ErrReport> {
     let StopDataflowReply { uuid, result } =
-        rpc(client.stop(tarpc::context::current(), uuid, grace_duration, force))?;
+        rpc(client.stop(tarpc::context::current(), uuid, grace_duration, force)).await?;
     handle_dataflow_result(result, Some(uuid))
 }
 
-fn stop_dataflow_by_name(
+async fn stop_dataflow_by_name(
     name: String,
     grace_duration: Option<Duration>,
     force: bool,
     client: &CliControlClient,
 ) -> Result<(), eyre::ErrReport> {
     let StopDataflowReply { uuid, result } =
-        rpc(client.stop_by_name(tarpc::context::current(), name, grace_duration, force))?;
+        rpc(client.stop_by_name(tarpc::context::current(), name, grace_duration, force)).await?;
     handle_dataflow_result(result, Some(uuid))
 }
