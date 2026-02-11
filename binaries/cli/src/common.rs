@@ -119,7 +119,7 @@ pub(crate) async fn connect_to_coordinator_rpc(
     addr: IpAddr,
     control_port: u16,
 ) -> eyre::Result<CliControlClient> {
-    let rpc_port = control_port + 1;
+    let rpc_port = DORA_COORDINATOR_PORT_RPC_DEFAULT;
     let transport =
         tarpc::serde_transport::tcp::connect((addr, rpc_port), tokio_serde::formats::Json::default)
             .await

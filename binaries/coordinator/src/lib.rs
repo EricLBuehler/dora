@@ -72,7 +72,10 @@ pub async fn start(
         init_coordinator(bind, external_events, control_events, tasks).await?;
 
     // Bind the tarpc RPC server on the same interface
-    let rpc_bind = SocketAddr::new(bind_control.ip(), bind_control.port() + 1);
+    let rpc_bind = SocketAddr::new(
+        bind_control.ip(),
+        dora_core::topics::DORA_COORDINATOR_PORT_RPC_DEFAULT,
+    );
     let listener =
         tarpc::serde_transport::tcp::listen(rpc_bind, tokio_serde::formats::Json::default)
             .await
