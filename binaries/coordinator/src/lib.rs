@@ -1388,12 +1388,11 @@ async fn destroy_daemons(
         .map(|r| (r.key().clone(), r.value().stream.clone()))
         .collect();
 
-    let mut results = Vec::new();
-    for (daemon_id, stream) in &daemons {
+    let results = futures::future::join_all(daemons.iter().map(|(daemon_id, stream)| {
         tracing::info!("Destroying daemon connection for `{daemon_id}`");
-        let result = destroy_daemon(daemon_id.clone(), stream, timestamp).await;
-        results.push(result);
-    }
+        destroy_daemon(daemon_id.clone(), stream, timestamp)
+    }))
+    .await;
     daemon_connections.clear();
 
     for result in results {
