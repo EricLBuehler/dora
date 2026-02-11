@@ -17,7 +17,7 @@ use dora_message::{
 };
 use eyre::Context;
 
-use crate::common::{block_on, connect_to_coordinator_rpc};
+use crate::common::{connect_to_coordinator_rpc, rpc};
 use ratatui::{
     Frame, Terminal,
     backend::{Backend, CrosstermBackend},
@@ -266,9 +266,7 @@ fn run_app<B: Backend>(
         .wrap_err("Failed to connect to coordinator")?;
 
     // Query node info once initially
-    node_infos = block_on(client.get_node_info(tarpc::context::current()))?
-        .context("RPC transport error")?
-        .map_err(|e| eyre::eyre!(e))?;
+    node_infos = rpc(client.get_node_info(tarpc::context::current()))?;
 
     loop {
         terminal.draw(|f| ui(f, &mut app, refresh_duration))?;
@@ -314,9 +312,7 @@ fn run_app<B: Backend>(
         // Update data if refresh interval has passed
         if last_update.elapsed() >= refresh_duration {
             // Query node info every refresh interval to get updated metrics
-            node_infos = block_on(client.get_node_info(tarpc::context::current()))?
-                .context("RPC transport error")?
-                .map_err(|e| eyre::eyre!(e))?;
+            node_infos = rpc(client.get_node_info(tarpc::context::current()))?;
 
             // Update stats with current node info
             app.update_stats(node_infos.clone());

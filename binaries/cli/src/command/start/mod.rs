@@ -5,7 +5,9 @@
 use super::{Executable, default_tracing};
 use crate::{
     command::start::attach::attach_dataflow,
-    common::{block_on, connect_to_coordinator_rpc, local_working_dir, resolve_dataflow, write_events_to},
+    common::{
+        connect_to_coordinator_rpc, local_working_dir, resolve_dataflow, rpc, write_events_to,
+    },
     output::print_log_message,
     session::DataflowSession,
 };
@@ -123,7 +125,7 @@ fn start_dataflow(
 
     let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &client)?;
 
-    let dataflow_id = block_on(client.start(
+    let dataflow_id = rpc(client.start(
         tarpc::context::current(),
         StartRequest {
             build_id: dataflow_session.build_id,
@@ -134,9 +136,7 @@ fn start_dataflow(
             uv,
             write_events_to: write_events_to(),
         },
-    ))?
-    .context("RPC transport error")?
-    .map_err(|e| eyre::eyre!(e))?;
+    ))?;
     eprintln!("dataflow start triggered: {dataflow_id}");
 
     Ok((dataflow, dataflow_descriptor, client, dataflow_id))
@@ -178,9 +178,7 @@ fn wait_until_dataflow_started(
         }
     });
 
-    block_on(client.wait_for_spawn(tarpc::context::current(), dataflow_id))?
-        .context("RPC transport error")?
-        .map_err(|e| eyre::eyre!(e))?;
+    rpc(client.wait_for_spawn(tarpc::context::current(), dataflow_id))?;
     eprintln!("dataflow started: {dataflow_id}");
 
     Ok(())

@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     command::{Executable, default_tracing},
-    common::{CoordinatorOptions, block_on},
+    common::{CoordinatorOptions, rpc},
     formatting::OutputFormat,
 };
 use dora_message::{
@@ -70,9 +70,7 @@ fn list(
     format: OutputFormat,
 ) -> eyre::Result<()> {
     // Request node information from coordinator
-    let node_infos = block_on(client.get_node_info(tarpc::context::current()))?
-        .context("RPC transport error")?
-        .map_err(|e| eyre::eyre!(e))?;
+    let node_infos = rpc(client.get_node_info(tarpc::context::current()))?;
 
     // Filter by dataflow if specified
     let filtered_nodes: Vec<NodeInfo> = if let Some(ref filter) = dataflow_filter {

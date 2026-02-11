@@ -3,7 +3,7 @@ use std::io::Write;
 use super::{Executable, default_tracing};
 use crate::{
     LOCALHOST,
-    common::{block_on, connect_to_coordinator_rpc, query_running_dataflows},
+    common::{connect_to_coordinator_rpc, query_running_dataflows, rpc},
     formatting::OutputFormat,
 };
 use clap::Args;
@@ -86,9 +86,7 @@ fn list(
     let list = query_running_dataflows(client)?;
 
     // Get node information via tarpc
-    let node_infos = block_on(client.get_node_info(tarpc::context::current()))?
-        .context("RPC transport error")?
-        .map_err(|e| eyre::eyre!(e))?;
+    let node_infos = rpc(client.get_node_info(tarpc::context::current()))?;
 
     // Aggregate metrics by dataflow UUID
     let mut dataflow_metrics: std::collections::BTreeMap<Uuid, DataflowMetrics> =

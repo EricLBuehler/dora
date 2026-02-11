@@ -5,7 +5,7 @@ use std::{
 
 use super::{Executable, default_tracing};
 use crate::{
-    common::{block_on, connect_to_coordinator_rpc, resolve_dataflow_identifier_interactive},
+    common::{connect_to_coordinator_rpc, resolve_dataflow_identifier_interactive, rpc},
     output::print_log_message,
 };
 use clap::Args;
@@ -70,15 +70,13 @@ pub fn logs(
     follow: bool,
     coordinator_addr: SocketAddr,
 ) -> Result<()> {
-    let logs = block_on(client.logs(
+    let logs = rpc(client.logs(
         tarpc::context::current(),
         Some(uuid),
         None,
         node.to_string(),
         tail,
-    ))?
-    .context("RPC transport error")?
-    .map_err(|e| eyre::eyre!(e))?;
+    ))?;
 
     std::io::stdout()
         .write_all(&logs)

@@ -4,7 +4,7 @@ use std::{
     fmt,
 };
 
-use crate::common::{block_on, resolve_dataflow_identifier_interactive};
+use crate::common::{resolve_dataflow_identifier_interactive, rpc};
 use dora_core::{config::InputMapping, descriptor::Descriptor};
 use dora_message::{
     DataflowId,
@@ -23,15 +23,10 @@ pub struct DataflowSelector {
 }
 
 impl DataflowSelector {
-    pub fn resolve(
-        &self,
-        client: &CliControlClient,
-    ) -> eyre::Result<(Uuid, Descriptor)> {
+    pub fn resolve(&self, client: &CliControlClient) -> eyre::Result<(Uuid, Descriptor)> {
         let dataflow_id =
             resolve_dataflow_identifier_interactive(client, self.dataflow.as_deref())?;
-        let info = block_on(client.info(tarpc::context::current(), dataflow_id))?
-            .context("RPC transport error")?
-            .map_err(|e| eyre::eyre!(e))?;
+        let info = rpc(client.info(tarpc::context::current(), dataflow_id))?;
         Ok((dataflow_id, info.descriptor))
     }
 }

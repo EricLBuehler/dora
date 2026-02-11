@@ -27,21 +27,27 @@ use uuid::Uuid;
 /// runtime that outlives any single `block_on` call.
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
-/// Run a future to completion, reusing the current tokio runtime if available,
-/// or using the persistent CLI runtime.
-pub(crate) fn block_on<F: Future>(f: F) -> eyre::Result<F::Output> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => Ok(handle.block_on(f)),
-        Err(_) => {
-            let rt = RUNTIME.get_or_init(|| {
-                Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("failed to create tokio runtime")
-            });
-            Ok(rt.block_on(f))
-        }
-    }
+/// Run a future to completion, reusing the persistent CLI runtime.
+pub(crate) fn block_on<F: Future>(f: F) -> F::Output {
+    let rt = RUNTIME.get_or_init(|| {
+        Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create tokio runtime")
+    });
+    rt.block_on(f)
+}
+
+/// Call a tarpc RPC method, unwrapping the two Result layers:
+///
+/// 1. Transport-level error (e.g. `RpcError`)
+/// 2. `Result<T, String>` from the application (coordinator) layer
+pub(crate) fn rpc<T, E: std::error::Error + Send + Sync + 'static>(
+    future: impl Future<Output = Result<Result<T, String>, E>>,
+) -> eyre::Result<T> {
+    block_on(future)
+        .context("RPC transport error")?
+        .map_err(|e| eyre::eyre!(e))
 }
 
 pub(crate) fn handle_dataflow_result(
@@ -62,13 +68,8 @@ pub(crate) fn handle_dataflow_result(
     }
 }
 
-pub(crate) fn query_running_dataflows(
-    client: &CliControlClient,
-) -> eyre::Result<DataflowList> {
-    let list = block_on(client.list(tarpc::context::current()))?
-        .context("RPC transport error")?
-        .map_err(|e| eyre::eyre!(e))?;
-    Ok(list)
+pub(crate) fn query_running_dataflows(client: &CliControlClient) -> eyre::Result<DataflowList> {
+    rpc(client.list(tarpc::context::current()))
 }
 
 pub(crate) fn resolve_dataflow_identifier_interactive(
@@ -184,9 +185,17 @@ pub(crate) fn local_working_dir(
 pub(crate) fn cli_and_daemon_on_same_machine(
     client: &CliControlClient,
 ) -> eyre::Result<bool> {
-    let result = block_on(client.cli_and_default_daemon_on_same_machine(tarpc::context::current()))?
-        .context("RPC transport error")?
-        .map_err(|e| eyre::eyre!(e))?;
+    let result = rpc(client.cli_and_default_daemon_on_same_machine(tarpc::context::current()))?;
+
+    // Determine the CLI's outgoing IP toward the coordinator.
+    // Uses a UDP socket to query the OS routing table (no packets sent).
+    let cli_ip = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| {
+            s.connect((coordinator_addr, 1))?;
+            s.local_addr()
+        })
+        .ok()
+        .map(|a| a.ip());
 
     Ok(result.default_daemon.is_some() && result.default_daemon == result.cli)
 }

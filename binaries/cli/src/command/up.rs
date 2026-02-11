@@ -1,9 +1,8 @@
 use super::system::status::daemon_running;
 use super::{Executable, default_tracing};
-use crate::{LOCALHOST, common::{block_on, connect_to_coordinator_rpc}};
-use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-use dora_message::{
-    tarpc,
+use crate::{
+    LOCALHOST,
+    common::{connect_to_coordinator_rpc, rpc},
 };
 use eyre::{Context, ContextCompat, bail};
 use std::path::PathBuf;
@@ -78,9 +77,7 @@ pub(crate) fn destroy(
     let rpc_port = coordinator_addr.port() + 1;
     match connect_to_coordinator_rpc(coordinator_addr.ip(), rpc_port) {
         Ok(client) => {
-            block_on(client.destroy(tarpc::context::current()))?
-                .context("RPC transport error")?
-                .map_err(|e| eyre::eyre!(e))?;
+            rpc(client.destroy(tarpc::context::current()))?;
             println!("Coordinator and daemons destroyed successfully");
         }
         Err(_) => {

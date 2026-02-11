@@ -1,5 +1,8 @@
 use crate::command::{Executable, default_tracing};
-use crate::{LOCALHOST, common::{block_on, connect_to_coordinator_rpc}};
+use crate::{
+    LOCALHOST,
+    common::{connect_to_coordinator_rpc, rpc},
+};
 use dora_core::descriptor::DescriptorExt;
 use dora_core::{descriptor::Descriptor, topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT};
 use dora_message::{
@@ -89,18 +92,11 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
 }
 
 pub fn daemon_running(client: &CliControlClient) -> Result<bool, eyre::ErrReport> {
-    let running = block_on(client.daemon_connected(tarpc::context::current()))?
-        .context("RPC transport error")?
-        .map_err(|e| eyre::eyre!(e))?;
-    Ok(running)
+    rpc(client.daemon_connected(tarpc::context::current()))
 }
 
-fn query_running_dataflow_count(
-    client: &CliControlClient,
-) -> Result<usize, eyre::ErrReport> {
-    let list = block_on(client.list(tarpc::context::current()))?
-        .context("RPC transport error")?
-        .map_err(|e| eyre::eyre!(e))?;
+fn query_running_dataflow_count(client: &CliControlClient) -> Result<usize, eyre::ErrReport> {
+    let list = rpc(client.list(tarpc::context::current()))?;
     Ok(list
         .0
         .iter()

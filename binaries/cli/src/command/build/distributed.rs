@@ -13,7 +13,7 @@ use std::{
     net::{SocketAddr, TcpStream},
 };
 
-use crate::common::block_on;
+use crate::common::rpc;
 use crate::output::print_log_message;
 use crate::session::DataflowSession;
 
@@ -25,7 +25,7 @@ pub fn build_distributed_dataflow(
     local_working_dir: Option<std::path::PathBuf>,
     uv: bool,
 ) -> eyre::Result<BuildId> {
-    let build_id = block_on(client.build(
+    let build_id = rpc(client.build(
         tarpc::context::current(),
         BuildRequest {
             session_id: dataflow_session.session_id,
@@ -35,9 +35,7 @@ pub fn build_distributed_dataflow(
             local_working_dir,
             uv,
         },
-    ))?
-    .context("RPC transport error")?
-    .map_err(|e| eyre::eyre!(e))?;
+    ))?;
     eprintln!("dataflow build triggered: {build_id}");
     Ok(build_id)
 }
@@ -77,9 +75,7 @@ pub fn wait_until_dataflow_built(
         }
     });
 
-    block_on(client.wait_for_build(tarpc::context::current(), build_id))?
-        .context("RPC transport error")?
-        .map_err(|e| eyre::eyre!(e))?;
+    rpc(client.wait_for_build(tarpc::context::current(), build_id))?;
     eprintln!("dataflow build finished successfully");
     Ok(build_id)
 }

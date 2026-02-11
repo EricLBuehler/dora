@@ -15,7 +15,7 @@ use std::{path::PathBuf, sync::mpsc, time::Duration};
 use tracing::{error, info};
 use uuid::Uuid;
 
-use crate::common::{block_on, handle_dataflow_result};
+use crate::common::{handle_dataflow_result, rpc};
 use crate::output::print_log_message;
 
 pub fn attach_dataflow(
@@ -177,37 +177,29 @@ pub fn attach_dataflow(
 
         let result: ControlRequestReply = match control_request {
             ControlRequest::Check { dataflow_uuid } => {
-                block_on(client.check(tarpc::context::current(), dataflow_uuid))?
-                    .context("RPC transport error")?
-                    .map_err(|e| eyre::eyre!(e))?
+                rpc(client.check(tarpc::context::current(), dataflow_uuid))?
             }
             ControlRequest::Stop {
                 dataflow_uuid,
                 grace_duration,
                 force,
-            } => {
-                block_on(client.stop(
-                    tarpc::context::current(),
-                    dataflow_uuid,
-                    grace_duration,
-                    force,
-                ))?
-                .context("RPC transport error")?
-                .map_err(|e| eyre::eyre!(e))?
-            }
+            } => rpc(client.stop(
+                tarpc::context::current(),
+                dataflow_uuid,
+                grace_duration,
+                force,
+            ))?,
             ControlRequest::Reload {
                 dataflow_id,
                 node_id,
                 operator_id,
             } => {
-                let uuid = block_on(client.reload(
+                let uuid = rpc(client.reload(
                     tarpc::context::current(),
                     dataflow_id,
                     node_id,
                     operator_id,
-                ))?
-                .context("RPC transport error")?
-                .map_err(|e| eyre::eyre!(e))?;
+                ))?;
                 ControlRequestReply::DataflowReloaded { uuid }
             }
             _ => {
