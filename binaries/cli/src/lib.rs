@@ -11,6 +11,8 @@ pub mod output;
 pub mod session;
 mod template;
 
+pub(crate) mod tcp;
+
 pub use command::build;
 pub use command::{Executable, Run as RunCommand, run, run_func};
 

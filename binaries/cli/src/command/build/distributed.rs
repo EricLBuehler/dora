@@ -1,4 +1,4 @@
-use communication_layer_request_reply::TcpConnection;
+use crate::tcp::AsyncTcpConnection;
 use dora_core::descriptor::Descriptor;
 use dora_message::{
     BuildId,
@@ -8,10 +8,7 @@ use dora_message::{
     tarpc,
 };
 use eyre::Context;
-use std::{
-    collections::BTreeMap,
-    net::{SocketAddr, TcpStream},
-};
+use std::{collections::BTreeMap, net::SocketAddr};
 
 use crate::common::rpc;
 use crate::output::print_log_message;
@@ -47,8 +44,9 @@ pub async fn wait_until_dataflow_built(
     log_level: log::LevelFilter,
 ) -> eyre::Result<BuildId> {
     // subscribe to build log messages (TCP streaming)
-    let mut log_session = TcpConnection {
-        stream: TcpStream::connect(coordinator_socket)
+    let mut log_session = AsyncTcpConnection {
+        stream: tokio::net::TcpStream::connect(coordinator_socket)
+            .await
             .wrap_err("failed to connect to dora coordinator")?,
     };
     log_session
@@ -59,9 +57,10 @@ pub async fn wait_until_dataflow_built(
             })
             .wrap_err("failed to serialize message")?,
         )
+        .await
         .wrap_err("failed to send build log subscribe request to coordinator")?;
-    std::thread::spawn(move || {
-        while let Ok(raw) = log_session.receive() {
+    tokio::spawn(async move {
+        while let Ok(raw) = log_session.receive().await {
             let parsed: eyre::Result<LogMessage> =
                 serde_json::from_slice(&raw).context("failed to parse log message");
             match parsed {

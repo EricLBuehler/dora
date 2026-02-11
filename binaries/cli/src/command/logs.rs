@@ -1,15 +1,12 @@
-use std::{
-    io::Write,
-    net::{SocketAddr, TcpStream},
-};
+use std::{io::Write, net::SocketAddr};
 
 use super::{Executable, default_tracing};
 use crate::{
     common::{connect_to_coordinator_rpc, resolve_dataflow_identifier_interactive, rpc},
     output::print_log_message,
+    tcp::AsyncTcpConnection,
 };
 use clap::Args;
-use communication_layer_request_reply::TcpConnection;
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::{
     cli_to_coordinator::{CliControlClient, LegacyControlRequest},
@@ -91,8 +88,9 @@ pub async fn logs(
         .filter();
 
     // subscribe to log messages
-    let mut log_session = TcpConnection {
-        stream: TcpStream::connect(coordinator_addr)
+    let mut log_session = AsyncTcpConnection {
+        stream: tokio::net::TcpStream::connect(coordinator_addr)
+            .await
             .wrap_err("failed to connect to dora coordinator")?,
     };
     log_session
@@ -103,8 +101,9 @@ pub async fn logs(
             })
             .wrap_err("failed to serialize message")?,
         )
+        .await
         .wrap_err("failed to send log subscribe request to coordinator")?;
-    while let Ok(raw) = log_session.receive() {
+    while let Ok(raw) = log_session.receive().await {
         let parsed: eyre::Result<LogMessage> =
             serde_json::from_slice(&raw).context("failed to parse log message");
         match parsed {

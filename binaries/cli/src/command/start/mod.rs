@@ -3,6 +3,7 @@
 //! The `dora start` command does not run any build commands, nor update git dependencies or similar. Use `dora build` for that.
 
 use super::{Executable, default_tracing};
+use crate::tcp::AsyncTcpConnection;
 use crate::{
     command::start::attach::attach_dataflow,
     common::{
@@ -11,7 +12,6 @@ use crate::{
     output::print_log_message,
     session::DataflowSession,
 };
-use communication_layer_request_reply::TcpConnection;
 use dora_core::{
     descriptor::{Descriptor, DescriptorExt},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
@@ -23,7 +23,7 @@ use dora_message::{
 };
 use eyre::Context;
 use std::{
-    net::{IpAddr, SocketAddr, TcpStream},
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
 };
 use uuid::Uuid;
@@ -92,7 +92,8 @@ impl Executable for Start {
                 self.hot_reload,
                 coordinator_socket,
                 log_level,
-            ).await
+            )
+            .await
         } else {
             let print_daemon_name = dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some());
             // wait until dataflow is started
@@ -102,7 +103,8 @@ impl Executable for Start {
                 coordinator_socket,
                 log::LevelFilter::Info,
                 print_daemon_name,
-            ).await
+            )
+            .await
         }
     }
 }
@@ -113,7 +115,9 @@ async fn start_dataflow(
     coordinator_socket: SocketAddr,
     uv: bool,
 ) -> Result<(PathBuf, Descriptor, CliControlClient, Uuid), eyre::Error> {
-    let dataflow = resolve_dataflow(dataflow).await.context("could not resolve dataflow")?;
+    let dataflow = resolve_dataflow(dataflow)
+        .await
+        .context("could not resolve dataflow")?;
     let dataflow_descriptor =
         Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
     let dataflow_session =
@@ -128,7 +132,8 @@ async fn start_dataflow(
         &dataflow_descriptor,
         &client,
         coordinator_socket.ip(),
-    ).await?;
+    )
+    .await?;
 
     let dataflow_id = rpc(client.start(
         tarpc::context::current(),
@@ -156,8 +161,9 @@ async fn wait_until_dataflow_started(
     print_daemon_id: bool,
 ) -> eyre::Result<()> {
     // subscribe to log messages (TCP streaming)
-    let mut log_session = TcpConnection {
-        stream: TcpStream::connect(coordinator_addr)
+    let mut log_session = AsyncTcpConnection {
+        stream: tokio::net::TcpStream::connect(coordinator_addr)
+            .await
             .wrap_err("failed to connect to dora coordinator")?,
     };
     log_session
@@ -168,9 +174,10 @@ async fn wait_until_dataflow_started(
             })
             .wrap_err("failed to serialize message")?,
         )
+        .await
         .wrap_err("failed to send log subscribe request to coordinator")?;
-    std::thread::spawn(move || {
-        while let Ok(raw) = log_session.receive() {
+    tokio::spawn(async move {
+        while let Ok(raw) = log_session.receive().await {
             let parsed: eyre::Result<LogMessage> =
                 serde_json::from_slice(&raw).context("failed to parse log message");
             match parsed {

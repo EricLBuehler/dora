@@ -5,7 +5,7 @@ use std::{
 
 use clap::Args;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -271,36 +271,44 @@ async fn run_app<B: Backend>(
             .checked_sub(last_update.elapsed())
             .unwrap_or(Duration::from_millis(100));
 
-        if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            return Ok(());
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            app.next();
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            app.previous();
-                        }
-                        KeyCode::Char('n') => {
-                            app.toggle_sort(SortColumn::Node);
-                        }
-                        KeyCode::Char('c') => {
-                            app.toggle_sort(SortColumn::Cpu);
-                        }
-                        KeyCode::Char('m') => {
-                            app.toggle_sort(SortColumn::Memory);
-                        }
-                        KeyCode::Char('r') => {
-                            // Force refresh by resetting last_update
-                            last_update = Instant::now()
-                                .checked_sub(refresh_duration)
-                                .unwrap_or(Instant::now());
-                        }
-                        _ => {}
+        let key_event: Option<KeyEvent> = tokio::task::spawn_blocking(move || {
+            if event::poll(timeout)? {
+                if let Event::Key(key) = event::read()? {
+                    return Ok(Some(key));
+                }
+            }
+            Ok::<_, std::io::Error>(None)
+        })
+        .await??;
+
+        if let Some(key) = key_event {
+            if key.kind == KeyEventKind::Press {
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        return Ok(());
                     }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        app.next();
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        app.previous();
+                    }
+                    KeyCode::Char('n') => {
+                        app.toggle_sort(SortColumn::Node);
+                    }
+                    KeyCode::Char('c') => {
+                        app.toggle_sort(SortColumn::Cpu);
+                    }
+                    KeyCode::Char('m') => {
+                        app.toggle_sort(SortColumn::Memory);
+                    }
+                    KeyCode::Char('r') => {
+                        // Force refresh by resetting last_update
+                        last_update = Instant::now()
+                            .checked_sub(refresh_duration)
+                            .unwrap_or(Instant::now());
+                    }
+                    _ => {}
                 }
             }
         }

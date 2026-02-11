@@ -1,4 +1,4 @@
-use communication_layer_request_reply::TcpConnection;
+use crate::tcp::AsyncTcpConnection;
 use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
 use dora_message::cli_to_coordinator::{CliControlClient, LegacyControlRequest};
 use dora_message::common::LogMessage;
@@ -8,11 +8,8 @@ use dora_message::tarpc;
 use eyre::Context;
 use notify::event::ModifyKind;
 use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::{
-    collections::HashMap,
-    net::{SocketAddr, TcpStream},
-};
-use std::{path::PathBuf, sync::mpsc, time::Duration};
+use std::{collections::HashMap, net::SocketAddr};
+use std::{path::PathBuf, time::Duration};
 use tracing::info;
 use uuid::Uuid;
 
@@ -28,7 +25,7 @@ pub async fn attach_dataflow(
     coordinator_socket: SocketAddr,
     log_level: log::LevelFilter,
 ) -> Result<(), eyre::ErrReport> {
-    let (tx, rx) = mpsc::channel();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
     // Generate path hashmap
     let mut node_path_lookup = HashMap::new();
@@ -86,8 +83,9 @@ pub async fn attach_dataflow(
                                 node_id: node_id.clone(),
                                 operator_id: operator_id.clone(),
                             })
-                            .context("Could not send reload request to the cli loop")
-                            .unwrap();
+                            .unwrap_or_else(|_| {
+                                panic!("Could not send reload request to the cli loop")
+                            });
                     }
                 }
                 // TODO: Manage different file event
@@ -124,8 +122,9 @@ pub async fn attach_dataflow(
     .wrap_err("failed to set ctrl-c handler")?;
 
     // subscribe to log messages
-    let mut log_session = TcpConnection {
-        stream: TcpStream::connect(coordinator_socket)
+    let mut log_session = AsyncTcpConnection {
+        stream: tokio::net::TcpStream::connect(coordinator_socket)
+            .await
             .wrap_err("failed to connect to dora coordinator")?,
     };
     log_session
@@ -136,9 +135,10 @@ pub async fn attach_dataflow(
             })
             .wrap_err("failed to serialize message")?,
         )
+        .await
         .wrap_err("failed to send log subscribe request to coordinator")?;
-    std::thread::spawn(move || {
-        while let Ok(raw) = log_session.receive() {
+    tokio::spawn(async move {
+        while let Ok(raw) = log_session.receive().await {
             let parsed: eyre::Result<LogMessage> =
                 serde_json::from_slice(&raw).context("failed to parse log message");
             if tx.send(AttachEvent::Log(parsed)).is_err() {
@@ -148,8 +148,11 @@ pub async fn attach_dataflow(
     });
 
     loop {
-        let event: AttachLoopEvent = match rx.recv_timeout(Duration::from_secs(1)) {
-            Err(_err) => {
+        let event: AttachLoopEvent = match tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+        {
+            Err(_) => {
+                // timeout - check if dataflow is still running
                 let check_reply = rpc(client.check(tarpc::context::current(), dataflow_id)).await?;
                 match check_reply {
                     CheckDataflowReply::Running { .. } => continue,
@@ -158,31 +161,36 @@ pub async fn attach_dataflow(
                     }
                 }
             }
-            Ok(AttachEvent::Reload {
+            Ok(Some(AttachEvent::Reload {
                 dataflow_id,
                 node_id,
                 operator_id,
-            }) => {
+            })) => {
                 let uuid = rpc(client.reload(
                     tarpc::context::current(),
                     dataflow_id,
                     node_id,
                     operator_id,
-                )).await?;
+                ))
+                .await?;
                 AttachLoopEvent::Reloaded { uuid }
             }
-            Ok(AttachEvent::Stop { force }) => {
+            Ok(Some(AttachEvent::Stop { force })) => {
                 let StopDataflowReply { uuid, result } =
                     rpc(client.stop(tarpc::context::current(), dataflow_id, None, force)).await?;
                 AttachLoopEvent::Stopped { uuid, result }
             }
-            Ok(AttachEvent::Log(Ok(log_message))) => {
+            Ok(Some(AttachEvent::Log(Ok(log_message)))) => {
                 print_log_message(log_message, false, print_daemon_name);
                 continue;
             }
-            Ok(AttachEvent::Log(Err(err))) => {
+            Ok(Some(AttachEvent::Log(Err(err)))) => {
                 tracing::warn!("failed to parse log message: {:#?}", err);
                 continue;
+            }
+            Ok(None) => {
+                // all senders dropped, channel closed
+                break Ok(());
             }
         };
 
