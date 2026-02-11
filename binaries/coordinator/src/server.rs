@@ -334,8 +334,9 @@ impl CliControl for ControlServer {
     ) -> Result<CliAndDefaultDaemonIps, String> {
         let mut default_daemon_ip = None;
         if let Some(default_id) = self.state.daemon_connections.unnamed().next() {
-            if let Some(connection) = self.state.daemon_connections.get(&default_id) {
-                if let Ok(addr) = connection.stream.peer_addr() {
+            if let Some(stream) = self.state.daemon_connections.get_stream(&default_id) {
+                let stream = stream.lock().await;
+                if let Ok(addr) = stream.peer_addr() {
                     default_daemon_ip = Some(addr.ip());
                 }
             }

@@ -130,14 +130,16 @@ async fn send_spawn_to_daemon(
     daemon_id: &DaemonId,
     message: &[u8],
 ) -> Result<(), eyre::ErrReport> {
-    let mut daemon_connection = daemon_connections
-        .get_mut(daemon_id)
+    // Clone the Arc<Mutex<TcpStream>> and immediately drop the DashMap lock.
+    let stream = daemon_connections
+        .get_stream(daemon_id)
         .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?;
-    tcp_send(&mut daemon_connection.stream, message)
+    let mut stream = stream.lock().await;
+    tcp_send(&mut stream, message)
         .await
         .wrap_err("failed to send spawn message to daemon")?;
 
-    let reply_raw = tcp_receive(&mut daemon_connection.stream)
+    let reply_raw = tcp_receive(&mut stream)
         .await
         .wrap_err("failed to receive spawn reply from daemon")?;
     match serde_json::from_slice(&reply_raw)
