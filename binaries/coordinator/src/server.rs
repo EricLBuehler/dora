@@ -68,6 +68,7 @@ async fn stop_dataflow_impl(
 #[derive(Clone)]
 pub(crate) struct ControlServer {
     pub(crate) state: Arc<CoordinatorState>,
+    pub(crate) client_ip: Option<std::net::IpAddr>,
 }
 
 impl CliControl for ControlServer {

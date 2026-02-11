@@ -84,7 +84,10 @@ pub async fn start(
     let stream = listener
         // ignore connect errors
         .filter_map(|c| future::ready(c.ok()))
-        .map(move |transport| serve_control_requests(transport, coordinator_state.clone()));
+        .map(move |transport| {
+            let client_ip = transport.peer_addr().ok().map(|addr| addr.ip());
+            serve_control_requests(transport, coordinator_state.clone(), client_ip)
+        });
     tokio::spawn(stream.for_each(|handle_connection| async {
         tokio::spawn(handle_connection);
     }));
@@ -108,7 +111,11 @@ pub async fn start_with_channel_rpc(
 
     // Create an in-process channel-based client (no TCP overhead)
     let (client_transport, server_transport) = tarpc::transport::channel::unbounded();
-    tokio::spawn(serve_control_requests(server_transport, coordinator_state));
+    tokio::spawn(serve_control_requests(
+        server_transport,
+        coordinator_state,
+        None,
+    ));
     let control_client = CliControlClient::new(client::Config::default(), client_transport).spawn();
 
     Ok((control_client, future))
@@ -191,13 +198,14 @@ async fn init_coordinator(
 fn serve_control_requests<T>(
     transport: T,
     state: Arc<state::CoordinatorState>,
+    client_ip: Option<std::net::IpAddr>,
 ) -> impl Future<Output = ()>
 where
     T: Transport<Response<CliControlResponse>, ClientMessage<CliControlRequest>> + Send + 'static,
     T::Error: std::error::Error + Send + Sync + 'static,
 {
     let channel = BaseChannel::with_defaults(transport);
-    let server = ControlServer { state };
+    let server = ControlServer { state, client_ip };
     channel.execute(server.serve()).for_each(|fut| async {
         tokio::spawn(fut);
     })
