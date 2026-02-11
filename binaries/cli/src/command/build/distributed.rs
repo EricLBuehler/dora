@@ -10,7 +10,7 @@ use dora_message::{
 use eyre::Context;
 use std::{collections::BTreeMap, net::SocketAddr};
 
-use crate::common::rpc;
+use crate::common::{long_context, rpc};
 use crate::output::print_log_message;
 use crate::session::DataflowSession;
 
@@ -75,7 +75,7 @@ pub async fn wait_until_dataflow_built(
         }
     });
 
-    rpc(client.wait_for_build(tarpc::context::current(), build_id)).await?;
+    rpc(client.wait_for_build(long_context(), build_id)).await?;
     eprintln!("dataflow build finished successfully");
     Ok(build_id)
 }

@@ -2,7 +2,7 @@ use std::{io::Write, net::SocketAddr};
 
 use super::{Executable, default_tracing};
 use crate::{
-    common::{connect_to_coordinator_rpc, resolve_dataflow_identifier_interactive, rpc},
+    common::{connect_to_coordinator_rpc, long_context, resolve_dataflow_identifier_interactive, rpc},
     output::print_log_message,
     tcp::AsyncTcpConnection,
 };
@@ -69,7 +69,7 @@ pub async fn logs(
     coordinator_addr: SocketAddr,
 ) -> Result<()> {
     let logs = rpc(client.logs(
-        tarpc::context::current(),
+        long_context(),
         Some(uuid),
         None,
         node.to_string(),

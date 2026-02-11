@@ -1,7 +1,7 @@
 use crate::{LOCALHOST, formatting::FormatDataflowError};
 use dora_core::{
     descriptor::{Descriptor, source_is_url},
-    topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_RPC_DEFAULT},
 };
 use dora_download::download_file;
 use dora_message::{
@@ -15,6 +15,7 @@ use std::{
     future::Future,
     net::IpAddr,
     path::{Path, PathBuf},
+    time::{Duration, SystemTime},
 };
 use uuid::Uuid;
 
@@ -29,6 +30,17 @@ pub(crate) async fn rpc<T, E: std::error::Error + Send + Sync + 'static>(
         .await
         .context("RPC transport error")?
         .map_err(|e| eyre::eyre!(e))
+}
+
+/// Create a tarpc context with a long deadline (10 minutes) for RPCs that
+/// may block for an extended time (e.g. `wait_for_build`, `stop`, `destroy`).
+///
+/// The default `tarpc::context::current()` has a 10-second deadline which
+/// is too short for operations that wait on dataflow lifecycle events.
+pub(crate) fn long_context() -> tarpc::context::Context {
+    let mut ctx = tarpc::context::current();
+    ctx.deadline = SystemTime::now() + Duration::from_secs(600);
+    ctx
 }
 
 pub(crate) fn handle_dataflow_result(

@@ -1,6 +1,6 @@
 use super::{Executable, default_tracing};
 use crate::common::{
-    connect_to_coordinator_rpc, handle_dataflow_result, query_running_dataflows, rpc,
+    connect_to_coordinator_rpc, handle_dataflow_result, long_context, query_running_dataflows, rpc,
 };
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::{
@@ -91,7 +91,7 @@ async fn stop_dataflow(
     client: &CliControlClient,
 ) -> Result<(), eyre::ErrReport> {
     let StopDataflowReply { uuid, result } =
-        rpc(client.stop(tarpc::context::current(), uuid, grace_duration, force)).await?;
+        rpc(client.stop(long_context(), uuid, grace_duration, force)).await?;
     handle_dataflow_result(result, Some(uuid))
 }
 
@@ -102,6 +102,6 @@ async fn stop_dataflow_by_name(
     client: &CliControlClient,
 ) -> Result<(), eyre::ErrReport> {
     let StopDataflowReply { uuid, result } =
-        rpc(client.stop_by_name(tarpc::context::current(), name, grace_duration, force)).await?;
+        rpc(client.stop_by_name(long_context(), name, grace_duration, force)).await?;
     handle_dataflow_result(result, Some(uuid))
 }

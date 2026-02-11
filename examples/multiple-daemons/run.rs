@@ -16,7 +16,7 @@ use std::{
     collections::BTreeSet,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use tokio::{sync::mpsc, task::JoinSet};
 use tokio_stream::wrappers::ReceiverStream;
@@ -115,6 +115,12 @@ async fn main() -> eyre::Result<()> {
     Ok(())
 }
 
+fn long_context() -> tarpc::context::Context {
+    let mut ctx = tarpc::context::current();
+    ctx.deadline = SystemTime::now() + Duration::from_secs(600);
+    ctx
+}
+
 async fn start_dataflow(dataflow: &Path, client: &CliControlClient) -> eyre::Result<Uuid> {
     let dataflow_descriptor = read_as_descriptor(dataflow)
         .await
@@ -150,7 +156,7 @@ async fn start_dataflow(dataflow: &Path, client: &CliControlClient) -> eyre::Res
         .map_err(|e| eyre::eyre!(e))?;
 
     client
-        .wait_for_spawn(tarpc::context::current(), uuid)
+        .wait_for_spawn(long_context(), uuid)
         .await
         .context("RPC transport error")?
         .map_err(|e| eyre::eyre!(e))?;
@@ -178,7 +184,7 @@ async fn running_dataflows(client: &CliControlClient) -> eyre::Result<Vec<Datafl
 
 async fn destroy(client: &CliControlClient) -> eyre::Result<()> {
     client
-        .destroy(tarpc::context::current())
+        .destroy(long_context())
         .await
         .context("RPC transport error")?
         .map_err(|e| eyre::eyre!(e))?;

@@ -13,7 +13,7 @@ use std::{path::PathBuf, time::Duration};
 use tracing::info;
 use uuid::Uuid;
 
-use crate::common::{handle_dataflow_result, rpc};
+use crate::common::{handle_dataflow_result, long_context, rpc};
 use crate::output::print_log_message;
 
 pub async fn attach_dataflow(
@@ -177,7 +177,7 @@ pub async fn attach_dataflow(
             }
             Ok(Some(AttachEvent::Stop { force })) => {
                 let StopDataflowReply { uuid, result } =
-                    rpc(client.stop(tarpc::context::current(), dataflow_id, None, force)).await?;
+                    rpc(client.stop(long_context(), dataflow_id, None, force)).await?;
                 AttachLoopEvent::Stopped { uuid, result }
             }
             Ok(Some(AttachEvent::Log(Ok(log_message)))) => {

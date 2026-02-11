@@ -7,7 +7,8 @@ use crate::tcp::AsyncTcpConnection;
 use crate::{
     command::start::attach::attach_dataflow,
     common::{
-        connect_to_coordinator_rpc, local_working_dir, resolve_dataflow, rpc, write_events_to,
+        connect_to_coordinator_rpc, local_working_dir, long_context, resolve_dataflow, rpc,
+        write_events_to,
     },
     output::print_log_message,
     session::DataflowSession,
@@ -191,7 +192,7 @@ async fn wait_until_dataflow_started(
         }
     });
 
-    rpc(client.wait_for_spawn(tarpc::context::current(), dataflow_id)).await?;
+    rpc(client.wait_for_spawn(long_context(), dataflow_id)).await?;
     eprintln!("dataflow started: {dataflow_id}");
 
     Ok(())
