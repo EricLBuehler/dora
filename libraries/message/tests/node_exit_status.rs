@@ -15,7 +15,7 @@ use std::process::ExitStatus;
 fn exit_code_zero_is_success() {
     let status = create_exit_status(0);
     let node_status: NodeExitStatus = Ok(status).into();
-    
+
     assert!(
         matches!(node_status, NodeExitStatus::Success),
         "Exit code 0 must map to Success, got: {:?}",
@@ -27,11 +27,11 @@ fn exit_code_zero_is_success() {
 #[test]
 fn non_zero_exit_codes() {
     let test_cases = vec![1, 2, 127, 255];
-    
+
     for code in test_cases {
         let status = create_exit_status(code);
         let node_status: NodeExitStatus = Ok(status).into();
-        
+
         assert!(
             matches!(node_status, NodeExitStatus::ExitCode(c) if c == code),
             "Exit code {} must map to ExitCode({}), got: {:?}",
@@ -47,7 +47,7 @@ fn non_zero_exit_codes() {
 fn io_error_maps_to_io_error_variant() {
     let io_err = io::Error::new(io::ErrorKind::BrokenPipe, "test error");
     let node_status: NodeExitStatus = Err(io_err).into();
-    
+
     assert!(
         matches!(node_status, NodeExitStatus::IoError(_)),
         "io::Error must map to IoError variant, got: {:?}",
@@ -60,20 +60,16 @@ fn io_error_maps_to_io_error_variant() {
 #[test]
 fn unix_signal_termination() {
     use std::os::unix::process::ExitStatusExt;
-    
-    let test_signals = vec![
-        (9, "SIGKILL"),
-        (15, "SIGTERM"),
-        (11, "SIGSEGV"),
-    ];
-    
+
+    let test_signals = vec![(9, "SIGKILL"), (15, "SIGTERM"), (11, "SIGSEGV")];
+
     for (signal, name) in test_signals {
         // On Unix, when a process is terminated by a signal, the signal number
         // is stored in the lower 7 bits (0-127), and the process did NOT exit normally.
         // Use from_raw with just the signal number (no shift).
         let status = ExitStatus::from_raw(signal);
         let node_status: NodeExitStatus = Ok(status).into();
-        
+
         assert!(
             matches!(node_status, NodeExitStatus::Signal(s) if s == signal),
             "Signal {} ({}) must map to Signal({}), got: {:?}",
@@ -103,7 +99,7 @@ fn unknown_is_not_produced_for_valid_inputs() {
             node_status
         );
     }
-    
+
     // Test I/O error
     let io_err = io::Error::new(io::ErrorKind::Other, "test");
     let node_status: NodeExitStatus = Err(io_err).into();
@@ -111,7 +107,7 @@ fn unknown_is_not_produced_for_valid_inputs() {
         !matches!(node_status, NodeExitStatus::Unknown),
         "I/O error should not produce Unknown"
     );
-    
+
     // Unix: Test signals
     #[cfg(unix)]
     {
