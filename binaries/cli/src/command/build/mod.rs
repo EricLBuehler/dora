@@ -91,24 +91,47 @@ pub struct Build {
 impl Executable for Build {
     async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        build(
+        build_async(
             self.dataflow,
             self.coordinator_addr,
             self.coordinator_port,
             self.uv,
             self.local,
-        ).await
+        )
+        .await
     }
 }
 
-pub async fn build(
+pub fn build(
     dataflow: String,
     coordinator_addr: Option<IpAddr>,
     coordinator_port: Option<u16>,
     uv: bool,
     force_local: bool,
 ) -> eyre::Result<()> {
-    let dataflow_path = resolve_dataflow(dataflow).await.context("could not resolve dataflow")?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("tokio runtime failed")?;
+    rt.block_on(build_async(
+        dataflow,
+        coordinator_addr,
+        coordinator_port,
+        uv,
+        force_local,
+    ))
+}
+
+pub async fn build_async(
+    dataflow: String,
+    coordinator_addr: Option<IpAddr>,
+    coordinator_port: Option<u16>,
+    uv: bool,
+    force_local: bool,
+) -> eyre::Result<()> {
+    let dataflow_path = resolve_dataflow(dataflow)
+        .await
+        .context("could not resolve dataflow")?;
     let dataflow_descriptor =
         Descriptor::blocking_read(&dataflow_path).wrap_err("Failed to read yaml dataflow")?;
     let mut dataflow_session =
@@ -142,7 +165,9 @@ pub async fn build(
         log::info!("Building through coordinator, using the given coordinator socket information");
         // explicit coordinator address or port set -> there should be a coordinator running
         BuildKind::ThroughCoordinator {
-            coordinator_client: session().await.context("failed to connect to coordinator")?,
+            coordinator_client: session()
+                .await
+                .context("failed to connect to coordinator")?,
         }
     } else {
         match session().await {
@@ -192,7 +217,8 @@ pub async fn build(
                 &dataflow_descriptor,
                 &coordinator_client,
                 coord.ip(),
-            ).await?;
+            )
+            .await?;
             let build_id = build_distributed_dataflow(
                 &coordinator_client,
                 dataflow_descriptor,
@@ -200,7 +226,8 @@ pub async fn build(
                 &dataflow_session,
                 local_working_dir,
                 uv,
-            ).await?;
+            )
+            .await?;
 
             dataflow_session.git_sources = git_sources;
             dataflow_session
@@ -214,7 +241,8 @@ pub async fn build(
                 &coordinator_client,
                 coordinator_socket(coordinator_addr, coordinator_port),
                 log::LevelFilter::Info,
-            ).await?;
+            )
+            .await?;
 
             dataflow_session.build_id = Some(build_id);
             dataflow_session.local_build = None;

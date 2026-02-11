@@ -18,7 +18,7 @@ mod system;
 mod topic;
 mod up;
 
-pub use build::build;
+pub use build::{build, build_async};
 pub use run::{Run, run, run_func};
 
 use build::Build;
