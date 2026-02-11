@@ -27,29 +27,30 @@ pub async fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()>
     let mut stdout = termcolor::StandardStream::stdout(color_choice);
 
     // Coordinator status
-    let client = match connect_to_coordinator_rpc(coordinator_addr.ip(), coordinator_addr.port()).await {
-        Ok(client) => {
-            let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
-            write!(stdout, "✓ ")?;
-            let _ = stdout.reset();
-            writeln!(stdout, "Coordinator: Running")?;
-            writeln!(
-                stdout,
-                "  Address: {}:{}",
-                coordinator_addr.ip(),
-                coordinator_addr.port()
-            )?;
-            Some(client)
-        }
-        Err(_) => {
-            let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
-            write!(stdout, "✗ ")?;
-            let _ = stdout.reset();
-            writeln!(stdout, "Coordinator: Not running")?;
-            error_occurred = true;
-            None
-        }
-    };
+    let client =
+        match connect_to_coordinator_rpc(coordinator_addr.ip(), coordinator_addr.port()).await {
+            Ok(client) => {
+                let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
+                write!(stdout, "✓ ")?;
+                let _ = stdout.reset();
+                writeln!(stdout, "Coordinator: Running")?;
+                writeln!(
+                    stdout,
+                    "  Address: {}:{}",
+                    coordinator_addr.ip(),
+                    coordinator_addr.port()
+                )?;
+                Some(client)
+            }
+            Err(_) => {
+                let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
+                write!(stdout, "✗ ")?;
+                let _ = stdout.reset();
+                writeln!(stdout, "Coordinator: Not running")?;
+                error_occurred = true;
+                None
+            }
+        };
 
     // Daemon status
     let daemon_running_result = match client.as_ref() {
@@ -131,7 +132,9 @@ impl Executable for Status {
                 Descriptor::blocking_read(&dataflow)?.check(&working_dir)?;
                 check_environment((self.coordinator_addr, self.coordinator_port).into()).await?
             }
-            None => check_environment((self.coordinator_addr, self.coordinator_port).into()).await?,
+            None => {
+                check_environment((self.coordinator_addr, self.coordinator_port).into()).await?
+            }
         }
 
         Ok(())

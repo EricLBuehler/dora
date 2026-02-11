@@ -58,7 +58,9 @@ impl Executable for Stop {
             (None, Some(name)) => {
                 stop_dataflow_by_name(name, self.grace_duration, self.force, &client).await
             }
-            (None, None) => stop_dataflow_interactive(self.grace_duration, self.force, &client).await,
+            (None, None) => {
+                stop_dataflow_interactive(self.grace_duration, self.force, &client).await
+            }
         }
     }
 }
@@ -68,7 +70,9 @@ async fn stop_dataflow_interactive(
     force: bool,
     client: &CliControlClient,
 ) -> eyre::Result<()> {
-    let list = query_running_dataflows(client).await.wrap_err("failed to query running dataflows")?;
+    let list = query_running_dataflows(client)
+        .await
+        .wrap_err("failed to query running dataflows")?;
     let active = list.get_active();
     if active.is_empty() {
         eprintln!("No dataflows are running");

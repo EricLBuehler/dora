@@ -150,11 +150,7 @@ async fn info(
         .await
         .context("failed to open zenoh session")?;
 
-    let subscribe_topic = zenoh_output_publish_topic(
-        dataflow_id,
-        &topic.node_id,
-        &topic.data_id,
-    );
+    let subscribe_topic = zenoh_output_publish_topic(dataflow_id, &topic.node_id, &topic.data_id);
     let subscriber = zenoh_session
         .declare_subscriber(subscribe_topic)
         .await
@@ -168,19 +164,18 @@ async fn info(
 
     // Collect messages for the specified duration
     while Instant::now() < end_time {
-        let Ok(sample) = tokio::time::timeout_at(deadline, subscriber.recv_async()).await
-        else {
+        let Ok(sample) = tokio::time::timeout_at(deadline, subscriber.recv_async()).await else {
             break;
         };
 
         match sample {
             Ok(sample) => {
-                let event = match Timestamped::deserialize_inter_daemon_event(
-                    &sample.payload().to_bytes(),
-                ) {
-                    Ok(event) => event,
-                    Err(_) => continue,
-                };
+                let event =
+                    match Timestamped::deserialize_inter_daemon_event(&sample.payload().to_bytes())
+                    {
+                        Ok(event) => event,
+                        Err(_) => continue,
+                    };
 
                 match event.inner {
                     InterDaemonEvent::Output { metadata, data, .. } => {

@@ -17,13 +17,7 @@ pub async fn build_dataflow_locally(
     working_dir: PathBuf,
     uv: bool,
 ) -> eyre::Result<BuildInfo> {
-    build_dataflow(
-        dataflow,
-        git_sources,
-        dataflow_session,
-        working_dir,
-        uv,
-    ).await
+    build_dataflow(dataflow, git_sources, dataflow_session, working_dir, uv).await
 }
 
 async fn build_dataflow(

@@ -32,7 +32,8 @@ pub async fn build_distributed_dataflow(
             local_working_dir,
             uv,
         },
-    )).await?;
+    ))
+    .await?;
     eprintln!("dataflow build triggered: {build_id}");
     Ok(build_id)
 }

@@ -5,7 +5,9 @@ use std::{
 
 use clap::Args;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -67,7 +69,8 @@ impl Executable for Top {
             self.coordinator_addr,
             self.coordinator_port,
             refresh_duration,
-        ).await;
+        )
+        .await;
 
         // Restore terminal
         disable_raw_mode()?;

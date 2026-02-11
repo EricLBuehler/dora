@@ -23,6 +23,7 @@ impl Executable for Destroy {
         up::destroy(
             self.config.as_deref(),
             (self.coordinator_addr, self.coordinator_port).into(),
-        ).await
+        )
+        .await
     }
 }

@@ -46,7 +46,8 @@ impl Executable for LogsArgs {
         let client = connect_to_coordinator_rpc(self.coordinator_addr, self.coordinator_port)
             .await
             .wrap_err("failed to connect to dora coordinator")?;
-        let uuid = resolve_dataflow_identifier_interactive(&client, self.dataflow.as_deref()).await?;
+        let uuid =
+            resolve_dataflow_identifier_interactive(&client, self.dataflow.as_deref()).await?;
         logs(
             &client,
             uuid,
@@ -54,7 +55,8 @@ impl Executable for LogsArgs {
             self.tail,
             self.follow,
             (self.coordinator_addr, self.coordinator_port).into(),
-        ).await
+        )
+        .await
     }
 }
 
@@ -72,7 +74,8 @@ pub async fn logs(
         None,
         node.to_string(),
         tail,
-    )).await?;
+    ))
+    .await?;
 
     std::io::stdout()
         .write_all(&logs)
