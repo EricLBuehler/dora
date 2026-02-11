@@ -130,8 +130,6 @@ pub async fn start(
         // ignore connect errors
         .filter_map(|c| future::ready(c.ok()))
         .map(BaseChannel::with_defaults)
-        // limit to 10 channels per IP
-        // .max_channels_per_key(10, |t| t.transport().peer_addr().ok().map(|a| a.ip()))
         .map(move |channel| {
             let server = ControlServer {
                 state: tarpc_state.clone(),

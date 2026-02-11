@@ -162,7 +162,7 @@ impl CliControl for ControlServer {
         }
 
         match rx.await {
-            Ok(Ok(_)) => Ok(()),
+            Ok(Ok(_uuid)) => Ok(()),
             Ok(Err(err)) => Err(err_to_string(err)),
             Err(_) => Err("coordinator dropped the reply sender".to_string()),
         }
