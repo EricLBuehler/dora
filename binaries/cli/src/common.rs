@@ -15,20 +15,30 @@ use std::{
     future::Future,
     net::IpAddr,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 use tokio::runtime::Builder;
 use uuid::Uuid;
 
+/// A persistent Tokio runtime shared across all `block_on` calls.
+///
+/// tarpc's client `.spawn()` creates background tasks via `tokio::spawn`.
+/// These tasks must stay alive for the client to function, so we need a
+/// runtime that outlives any single `block_on` call.
+static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
 /// Run a future to completion, reusing the current tokio runtime if available,
-/// or creating a new single-threaded one.
+/// or using the persistent CLI runtime.
 pub(crate) fn block_on<F: Future>(f: F) -> eyre::Result<F::Output> {
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => Ok(handle.block_on(f)),
         Err(_) => {
-            let rt = Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("tokio runtime failed")?;
+            let rt = RUNTIME.get_or_init(|| {
+                Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to create tokio runtime")
+            });
             Ok(rt.block_on(f))
         }
     }
@@ -115,12 +125,18 @@ pub(crate) fn connect_to_coordinator_rpc(
     addr: IpAddr,
     rpc_port: u16,
 ) -> eyre::Result<CliControlClient> {
-    let transport = block_on(tarpc::serde_transport::tcp::connect(
-        (addr, rpc_port),
-        tokio_serde::formats::Json::default,
-    ))?
-    .context("failed to connect tarpc client to coordinator")?;
-    let client = CliControlClient::new(client::Config::default(), transport).spawn();
+    let client = block_on(async {
+        let transport = tarpc::serde_transport::tcp::connect(
+            (addr, rpc_port),
+            tokio_serde::formats::Json::default,
+        )
+        .await
+        .context("failed to connect tarpc client to coordinator")?;
+        // `.spawn()` requires a running Tokio runtime, so it must be
+        // called inside the async block driven by `block_on`.
+        let client = CliControlClient::new(client::Config::default(), transport).spawn();
+        Ok::<_, eyre::Error>(client)
+    })??;
     Ok(client)
 }
 
