@@ -5,7 +5,7 @@ use crate::{
     common::{connect_to_coordinator_rpc, long_context, rpc},
 };
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-use dora_message::tarpc;
+
 use eyre::{Context, ContextCompat, bail};
 use std::path::PathBuf;
 use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};

@@ -4,7 +4,7 @@ use crate::common::{
 };
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::{
-    cli_to_coordinator::CliControlClient, coordinator_to_cli::StopDataflowReply, tarpc,
+    cli_to_coordinator::CliControlClient, coordinator_to_cli::StopDataflowReply,
 };
 use duration_str::parse;
 use eyre::Context;

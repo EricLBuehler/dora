@@ -11,7 +11,6 @@ use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::{
     cli_to_coordinator::{CliControlClient, LegacyControlRequest},
     common::LogMessage,
-    tarpc,
 };
 use eyre::{Context, Result};
 use uuid::Uuid;
