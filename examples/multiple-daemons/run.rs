@@ -16,7 +16,7 @@ use std::{
     collections::BTreeSet,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 use tokio::{sync::mpsc, task::JoinSet};
 use tokio_stream::wrappers::ReceiverStream;
@@ -117,7 +117,7 @@ async fn main() -> eyre::Result<()> {
 
 fn long_context() -> tarpc::context::Context {
     let mut ctx = tarpc::context::current();
-    ctx.deadline = SystemTime::now() + Duration::from_secs(600);
+    ctx.deadline = tokio::time::Instant::now() + Duration::from_secs(600);
     ctx
 }
 

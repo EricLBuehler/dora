@@ -15,7 +15,7 @@ use std::{
     future::Future,
     net::IpAddr,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 use uuid::Uuid;
 
@@ -39,7 +39,7 @@ pub(crate) async fn rpc<T, E: std::error::Error + Send + Sync + 'static>(
 /// is too short for operations that wait on dataflow lifecycle events.
 pub(crate) fn long_context() -> tarpc::context::Context {
     let mut ctx = tarpc::context::current();
-    ctx.deadline = SystemTime::now() + Duration::from_secs(600);
+    ctx.deadline = tokio::time::Instant::now() + Duration::from_secs(600);
     ctx
 }
 
