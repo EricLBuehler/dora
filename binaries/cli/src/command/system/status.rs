@@ -92,11 +92,15 @@ pub async fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()>
 }
 
 pub async fn daemon_running(client: &CliControlClient) -> Result<bool, eyre::ErrReport> {
-    rpc(client.daemon_connected(tarpc::context::current())).await
+    rpc(
+        "check daemon connection",
+        client.daemon_connected(tarpc::context::current()),
+    )
+    .await
 }
 
 async fn query_running_dataflow_count(client: &CliControlClient) -> Result<usize, eyre::ErrReport> {
-    let list = rpc(client.list(tarpc::context::current())).await?;
+    let list = rpc("list dataflows", client.list(tarpc::context::current())).await?;
     Ok(list
         .0
         .iter()

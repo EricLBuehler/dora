@@ -148,51 +148,55 @@ pub async fn attach_dataflow(
     });
 
     loop {
-        let event: AttachLoopEvent = match tokio::time::timeout(Duration::from_secs(1), rx.recv())
-            .await
-        {
-            Err(_) => {
-                // timeout - check if dataflow is still running
-                let check_reply = rpc(client.check(tarpc::context::current(), dataflow_id)).await?;
-                match check_reply {
-                    CheckDataflowReply::Running { .. } => continue,
-                    CheckDataflowReply::Stopped { uuid, result } => {
-                        AttachLoopEvent::Stopped { uuid, result }
+        let event: AttachLoopEvent =
+            match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
+                Err(_) => {
+                    // timeout - check if dataflow is still running
+                    let check_reply = rpc(
+                        "check dataflow status",
+                        client.check(tarpc::context::current(), dataflow_id),
+                    )
+                    .await?;
+                    match check_reply {
+                        CheckDataflowReply::Running { .. } => continue,
+                        CheckDataflowReply::Stopped { uuid, result } => {
+                            AttachLoopEvent::Stopped { uuid, result }
+                        }
                     }
                 }
-            }
-            Ok(Some(AttachEvent::Reload {
-                dataflow_id,
-                node_id,
-                operator_id,
-            })) => {
-                let uuid = rpc(client.reload(
-                    tarpc::context::current(),
+                Ok(Some(AttachEvent::Reload {
                     dataflow_id,
                     node_id,
                     operator_id,
-                ))
-                .await?;
-                AttachLoopEvent::Reloaded { uuid }
-            }
-            Ok(Some(AttachEvent::Stop { force })) => {
-                let StopDataflowReply { uuid, result } =
-                    rpc(client.stop(long_context(), dataflow_id, None, force)).await?;
-                AttachLoopEvent::Stopped { uuid, result }
-            }
-            Ok(Some(AttachEvent::Log(Ok(log_message)))) => {
-                print_log_message(log_message, false, print_daemon_name);
-                continue;
-            }
-            Ok(Some(AttachEvent::Log(Err(err)))) => {
-                tracing::warn!("failed to parse log message: {:#?}", err);
-                continue;
-            }
-            Ok(None) => {
-                // all senders dropped, channel closed
-                break Ok(());
-            }
-        };
+                })) => {
+                    let uuid = rpc(
+                        "reload operator",
+                        client.reload(tarpc::context::current(), dataflow_id, node_id, operator_id),
+                    )
+                    .await?;
+                    AttachLoopEvent::Reloaded { uuid }
+                }
+                Ok(Some(AttachEvent::Stop { force })) => {
+                    let StopDataflowReply { uuid, result } = rpc(
+                        "stop dataflow",
+                        client.stop(long_context(), dataflow_id, None, force),
+                    )
+                    .await?;
+                    AttachLoopEvent::Stopped { uuid, result }
+                }
+                Ok(Some(AttachEvent::Log(Ok(log_message)))) => {
+                    print_log_message(log_message, false, print_daemon_name);
+                    continue;
+                }
+                Ok(Some(AttachEvent::Log(Err(err)))) => {
+                    tracing::warn!("failed to parse log message: {:#?}", err);
+                    continue;
+                }
+                Ok(None) => {
+                    // all senders dropped, channel closed
+                    break Ok(());
+                }
+            };
 
         match event {
             AttachLoopEvent::Stopped { uuid, result } => {

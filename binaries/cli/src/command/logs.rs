@@ -69,7 +69,11 @@ pub async fn logs(
     follow: bool,
     coordinator_addr: SocketAddr,
 ) -> Result<()> {
-    let logs = rpc(client.logs(long_context(), Some(uuid), None, node.to_string(), tail)).await?;
+    let logs = rpc(
+        "retrieve logs",
+        client.logs(long_context(), Some(uuid), None, node.to_string(), tail),
+    )
+    .await?;
 
     std::io::stdout()
         .write_all(&logs)

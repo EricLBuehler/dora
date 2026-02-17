@@ -265,7 +265,11 @@ async fn run_app<B: Backend>(
         .wrap_err("Failed to connect to coordinator")?;
 
     // Query node info once initially
-    node_infos = rpc(client.get_node_info(tarpc::context::current())).await?;
+    node_infos = rpc(
+        "get node info",
+        client.get_node_info(tarpc::context::current()),
+    )
+    .await?;
 
     loop {
         terminal.draw(|f| ui(f, &mut app, refresh_duration))?;
@@ -319,7 +323,11 @@ async fn run_app<B: Backend>(
         // Update data if refresh interval has passed
         if last_update.elapsed() >= refresh_duration {
             // Query node info every refresh interval to get updated metrics
-            node_infos = rpc(client.get_node_info(tarpc::context::current())).await?;
+            node_infos = rpc(
+                "refresh node info",
+                client.get_node_info(tarpc::context::current()),
+            )
+            .await?;
 
             // Update stats with current node info
             app.update_stats(node_infos.clone());

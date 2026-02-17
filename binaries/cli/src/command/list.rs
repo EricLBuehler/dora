@@ -78,7 +78,11 @@ async fn list(
     let list = query_running_dataflows(client).await?;
 
     // Get node information via tarpc
-    let node_infos = rpc(client.get_node_info(tarpc::context::current())).await?;
+    let node_infos = rpc(
+        "get node info",
+        client.get_node_info(tarpc::context::current()),
+    )
+    .await?;
 
     // Aggregate metrics by dataflow UUID
     let mut dataflow_metrics: std::collections::BTreeMap<Uuid, DataflowMetrics> =

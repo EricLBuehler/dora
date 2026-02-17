@@ -24,12 +24,13 @@ use uuid::Uuid;
 /// 1. Transport-level error (e.g. `RpcError`)
 /// 2. `Result<T, String>` from the application (coordinator) layer
 pub(crate) async fn rpc<T, E: std::error::Error + Send + Sync + 'static>(
+    operation: &str,
     future: impl Future<Output = Result<Result<T, String>, E>>,
 ) -> eyre::Result<T> {
     future
         .await
-        .context("RPC transport error")?
-        .map_err(|e| eyre::eyre!(e))
+        .wrap_err_with(|| format!("RPC transport error during {operation}"))?
+        .map_err(|e| eyre::eyre!("{operation} failed: {e}"))
 }
 
 /// Create a tarpc context with a long deadline (10 minutes) for RPCs that
@@ -64,7 +65,7 @@ pub(crate) fn handle_dataflow_result(
 pub(crate) async fn query_running_dataflows(
     client: &CliControlClient,
 ) -> eyre::Result<DataflowList> {
-    rpc(client.list(tarpc::context::current())).await
+    rpc("list dataflows", client.list(tarpc::context::current())).await
 }
 
 pub(crate) async fn resolve_dataflow_identifier_interactive(
@@ -167,7 +168,11 @@ pub(crate) async fn local_working_dir(
 pub(crate) async fn cli_and_daemon_on_same_machine(
     client: &CliControlClient,
 ) -> eyre::Result<bool> {
-    rpc(client.cli_and_default_daemon_on_same_machine(tarpc::context::current())).await
+    rpc(
+        "check if CLI and daemon on same machine",
+        client.cli_and_default_daemon_on_same_machine(tarpc::context::current()),
+    )
+    .await
 }
 
 pub(crate) fn write_events_to() -> Option<PathBuf> {

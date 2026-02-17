@@ -130,18 +130,21 @@ async fn start_dataflow(
 
     let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &client).await?;
 
-    let dataflow_id = rpc(client.start(
-        tarpc::context::current(),
-        StartRequest {
-            build_id: dataflow_session.build_id,
-            session_id: dataflow_session.session_id,
-            dataflow: dataflow_descriptor.clone(),
-            name,
-            local_working_dir,
-            uv,
-            write_events_to: write_events_to(),
-        },
-    ))
+    let dataflow_id = rpc(
+        "start dataflow",
+        client.start(
+            tarpc::context::current(),
+            StartRequest {
+                build_id: dataflow_session.build_id,
+                session_id: dataflow_session.session_id,
+                dataflow: dataflow_descriptor.clone(),
+                name,
+                local_working_dir,
+                uv,
+                write_events_to: write_events_to(),
+            },
+        ),
+    )
     .await?;
     eprintln!("dataflow start triggered: {dataflow_id}");
 
@@ -186,7 +189,11 @@ async fn wait_until_dataflow_started(
         }
     });
 
-    rpc(client.wait_for_spawn(long_context(), dataflow_id)).await?;
+    rpc(
+        "wait for dataflow spawn",
+        client.wait_for_spawn(long_context(), dataflow_id),
+    )
+    .await?;
     eprintln!("dataflow started: {dataflow_id}");
 
     Ok(())

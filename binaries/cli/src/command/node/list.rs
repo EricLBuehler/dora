@@ -65,7 +65,11 @@ async fn list(
     format: OutputFormat,
 ) -> eyre::Result<()> {
     // Request node information from coordinator
-    let node_infos = rpc(client.get_node_info(tarpc::context::current())).await?;
+    let node_infos = rpc(
+        "get node info",
+        client.get_node_info(tarpc::context::current()),
+    )
+    .await?;
 
     // Filter by dataflow if specified
     let filtered_nodes: Vec<NodeInfo> = if let Some(ref filter) = dataflow_filter {

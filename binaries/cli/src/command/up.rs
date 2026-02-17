@@ -77,7 +77,7 @@ pub(crate) async fn destroy(
     let UpConfig {} = parse_dora_config(config_path)?;
     match connect_to_coordinator_rpc(coordinator_addr.ip(), coordinator_addr.port()).await {
         Ok(client) => {
-            rpc(client.destroy(long_context())).await?;
+            rpc("destroy coordinator", client.destroy(long_context())).await?;
             println!("Coordinator and daemons destroyed successfully");
         }
         Err(_) => {

@@ -26,7 +26,11 @@ impl DataflowSelector {
     pub async fn resolve(&self, client: &CliControlClient) -> eyre::Result<(Uuid, Descriptor)> {
         let dataflow_id =
             resolve_dataflow_identifier_interactive(client, self.dataflow.as_deref()).await?;
-        let info = rpc(client.info(tarpc::context::current(), dataflow_id)).await?;
+        let info = rpc(
+            "get dataflow info",
+            client.info(tarpc::context::current(), dataflow_id),
+        )
+        .await?;
         Ok((dataflow_id, info.descriptor))
     }
 }
