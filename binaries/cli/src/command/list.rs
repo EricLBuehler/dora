@@ -11,7 +11,7 @@ use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{
     cli_to_coordinator::CliControlClient, coordinator_to_cli::DataflowStatus, tarpc,
 };
-use eyre::eyre;
+use eyre::{Context, eyre};
 use serde::Serialize;
 use tabwriter::TabWriter;
 use uuid::Uuid;
@@ -45,7 +45,7 @@ impl Executable for ListArgs {
 
         let client = connect_to_coordinator_rpc(self.coordinator_addr, self.coordinator_port)
             .await
-            .map_err(|_| eyre!("Failed to connect to coordinator"))?;
+            .wrap_err("failed to connect to dora coordinator")?;
 
         list(&client, self.format, self.status, self.name, self.sort_by).await
     }
