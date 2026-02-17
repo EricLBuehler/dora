@@ -691,8 +691,9 @@ async fn start_inner(
                 build_id,
                 daemon_id,
                 result,
-            } => match coordinator_state.running_builds.get_mut(&build_id) {
-                Some(mut build) => {
+            } => match coordinator_state.running_builds.entry(build_id) {
+                dashmap::Entry::Occupied(mut entry) => {
+                    let build = entry.get_mut();
                     build.pending_build_results.remove(&daemon_id);
                     match result {
                         Ok(()) => {}
@@ -702,8 +703,7 @@ async fn start_inner(
                     };
                     if build.pending_build_results.is_empty() {
                         tracing::info!("dataflow build finished: `{build_id}`");
-                        let (build_id, mut build) =
-                            coordinator_state.running_builds.remove(&build_id).unwrap();
+                        let (build_id, mut build) = entry.remove_entry();
                         let result = if build.errors.is_empty() {
                             Ok(())
                         } else {
@@ -719,7 +719,7 @@ async fn start_inner(
                             .insert(build_id, build.build_result);
                     }
                 }
-                None => {
+                dashmap::Entry::Vacant(_) => {
                     tracing::warn!(
                         "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
                     );
