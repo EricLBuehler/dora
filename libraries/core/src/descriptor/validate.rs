@@ -24,6 +24,7 @@ pub fn check_dataflow(
 ) -> eyre::Result<()> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let mut has_python_operator = false;
+    let mut errors: Vec<String> = Vec::new();
 
     // check that nodes and operators exist
     for node in nodes.values() {
@@ -47,10 +48,11 @@ pub fn check_dataflow(
                             }
                         } else if custom.build.is_some() {
                             info!("skipping path check for node with build command");
-                        } else {
-                            resolve_path(source, working_dir).wrap_err_with(|| {
-                                format!("Could not find source path `{source}`")
-                            })?;
+                        } else if let Err(err) = resolve_path(source, working_dir) {
+                            errors.push(format!(
+                                "node `{}`: could not find source path `{source}`: {err}",
+                                node.id
+                            ));
                         };
                     }
                 },
@@ -58,8 +60,8 @@ pub fn check_dataflow(
                     info!("skipping check for node with git source");
                 }
             },
-            descriptor::CoreNodeKind::Runtime(node) => {
-                for operator_definition in &node.operators {
+            descriptor::CoreNodeKind::Runtime(runtime_node) => {
+                for operator_definition in &runtime_node.operators {
                     match &operator_definition.config.source {
                         OperatorSource::SharedLibrary(path) => {
                             if source_is_url(path) {
@@ -67,9 +69,23 @@ pub fn check_dataflow(
                             } else if operator_definition.config.build.is_some() {
                                 info!("skipping path check for operator with build command");
                             } else {
-                                let path = adjust_shared_library_path(Path::new(&path))?;
-                                if !working_dir.join(&path).exists() {
-                                    bail!("no shared library at `{}`", path.display());
+                                match adjust_shared_library_path(Path::new(&path)) {
+                                    Ok(path) => {
+                                        if !working_dir.join(&path).exists() {
+                                            errors.push(format!(
+                                                "node `{}`, operator `{}`: no shared library at `{}`",
+                                                node.id,
+                                                operator_definition.id,
+                                                path.display()
+                                            ));
+                                        }
+                                    }
+                                    Err(err) => {
+                                        errors.push(format!(
+                                            "node `{}`, operator `{}`: {err}",
+                                            node.id, operator_definition.id,
+                                        ));
+                                    }
                                 }
                             }
                         }
@@ -79,14 +95,20 @@ pub fn check_dataflow(
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
                             } else if !working_dir.join(path).exists() {
-                                bail!("no Python library at `{path}`");
+                                errors.push(format!(
+                                    "node `{}`, operator `{}`: no Python library at `{path}`",
+                                    node.id, operator_definition.id,
+                                ));
                             }
                         }
                         OperatorSource::Wasm(path) => {
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
                             } else if !working_dir.join(path).exists() {
-                                bail!("no WASM library at `{path}`");
+                                errors.push(format!(
+                                    "node `{}`, operator `{}`: no WASM library at `{path}`",
+                                    node.id, operator_definition.id,
+                                ));
                             }
                         }
                     }
@@ -100,17 +122,22 @@ pub fn check_dataflow(
         match &node.kind {
             descriptor::CoreNodeKind::Custom(custom_node) => {
                 for (input_id, input) in &custom_node.run_config.inputs {
-                    check_input(input, &nodes, &format!("{}/{input_id}", node.id))?;
+                    if let Err(err) = check_input(input, &nodes, &format!("{}/{input_id}", node.id))
+                    {
+                        errors.push(format!("{err}"));
+                    }
                 }
             }
             descriptor::CoreNodeKind::Runtime(runtime_node) => {
                 for operator_definition in &runtime_node.operators {
                     for (input_id, input) in &operator_definition.config.inputs {
-                        check_input(
+                        if let Err(err) = check_input(
                             input,
                             &nodes,
                             &format!("{}/{}/{input_id}", operator_definition.id, node.id),
-                        )?;
+                        ) {
+                            errors.push(format!("{err}"));
+                        }
                     }
                 }
             }
@@ -119,15 +146,34 @@ pub fn check_dataflow(
 
     // Check that nodes can resolve `send_stdout_as`
     for node in nodes.values() {
-        node.send_stdout_as()
-            .context("Could not resolve `send_stdout_as` configuration")?;
+        if let Err(err) = node.send_stdout_as() {
+            errors.push(format!(
+                "node `{}`: could not resolve `send_stdout_as` configuration: {err}",
+                node.id
+            ));
+        }
     }
 
     if has_python_operator {
-        check_python_runtime()?;
+        if let Err(err) = check_python_runtime() {
+            errors.push(format!("{err}"));
+        }
     }
 
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        let error_list = errors
+            .iter()
+            .map(|e| format!("  - {e}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        bail!(
+            "found {} validation error(s):\n{}",
+            errors.len(),
+            error_list
+        );
+    }
 }
 
 pub trait ResolvedNodeExt {
