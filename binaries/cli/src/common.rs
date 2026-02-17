@@ -1,7 +1,7 @@
 use crate::{LOCALHOST, formatting::FormatDataflowError};
 use dora_core::{
     descriptor::{Descriptor, source_is_url},
-    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_RPC_DEFAULT},
+    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, dora_coordinator_port_rpc},
 };
 use dora_download::download_file;
 use dora_message::{
@@ -115,9 +115,9 @@ impl CoordinatorOptions {
 /// Connect to the coordinator's tarpc RPC service.
 pub(crate) async fn connect_to_coordinator_rpc(
     addr: IpAddr,
-    _control_port: u16,
+    control_port: u16,
 ) -> eyre::Result<CliControlClient> {
-    let rpc_port = DORA_COORDINATOR_PORT_RPC_DEFAULT;
+    let rpc_port = dora_coordinator_port_rpc(control_port);
     let transport =
         tarpc::serde_transport::tcp::connect((addr, rpc_port), tokio_serde::formats::Json::default)
             .await
