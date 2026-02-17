@@ -2000,7 +2000,7 @@ dependencies = [
  "enum-ordinalize",
  "proc-macro2",
  "quote",
- "syn 2.0.114",
+ "syn 2.0.116",
 ]
 
 [[package]]
@@ -2032,7 +2032,7 @@ checksum = "8ca9601fb2d62598ee17836250842873a413586e5d7ed88b356e38ddbb0ec631"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.114",
+ "syn 2.0.116",
 ]
 
 [[package]]
@@ -6273,7 +6273,7 @@ checksum = "26ef4401b013b1f5218ba33ea8f1eddbfcc00ec8db073ef995c192e71f08f027"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.114",
+ "syn 2.0.116",
 ]
 
 [[package]]
