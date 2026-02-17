@@ -104,6 +104,7 @@ impl Parameter {
             Parameter::Float(_) => "float",
             Parameter::ListFloat(_) => "list<f64>",
             Parameter::ListString(_) => "list<string>",
+            Parameter::Timestamp(_) => "timestamp",
         }
     }
 }
