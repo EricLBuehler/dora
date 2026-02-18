@@ -1,7 +1,8 @@
 [package]
 name = "dora-message"
 # versioned separately from the other dora crates
-version = "0.8.0-alpha"
+# TODO: update to 0.8.0 on next release
+version = "0.7.0"
 edition.workspace = true
 rust-version.workspace = true
 documentation.workspace = true
