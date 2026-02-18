@@ -24,7 +24,7 @@ pub struct Graph {
 }
 
 impl Executable for Graph {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         create(self.dataflow, self.mermaid, self.open)
     }
 }

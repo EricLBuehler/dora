@@ -5,6 +5,12 @@ pub const DORA_COORDINATOR_PORT_DEFAULT: u16 = 53290;
 pub const DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT: u16 = 53291;
 pub const DORA_COORDINATOR_PORT_CONTROL_DEFAULT: u16 = 6012;
 
+/// Calculate the RPC port from the control port.
+/// The RPC port is always control_port + 1.
+pub const fn dora_coordinator_port_rpc(control_port: u16) -> u16 {
+    control_port + 1
+}
+
 pub const MANUAL_STOP: &str = "dora/stop";
 
 #[cfg(feature = "zenoh")]

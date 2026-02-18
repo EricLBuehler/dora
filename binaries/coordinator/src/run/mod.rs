@@ -20,17 +20,22 @@ use std::{
 };
 use uuid::{NoContext, Timestamp, Uuid};
 
+/// Plan a dataflow spawn without sending any commands to daemons yet.
+///
+/// Resolves nodes, generates a UUID, and determines which daemon handles
+/// each node group. The actual spawn commands are prepared as serialized
+/// messages but not sent.
 #[tracing::instrument(skip(daemon_connections, clock))]
-pub(super) async fn spawn_dataflow(
+pub(super) fn plan_dataflow(
     build_id: Option<BuildId>,
     session_id: SessionId,
-    dataflow: Descriptor,
+    dataflow: &Descriptor,
     local_working_dir: Option<PathBuf>,
-    daemon_connections: &mut DaemonConnections,
+    daemon_connections: &DaemonConnections,
     clock: &HLC,
     uv: bool,
     write_events_to: Option<PathBuf>,
-) -> eyre::Result<SpawnedDataflow> {
+) -> eyre::Result<DataflowPlan> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
 
@@ -40,12 +45,16 @@ pub(super) async fn spawn_dataflow(
 
     let mut daemons = BTreeSet::new();
     let mut node_to_daemon = BTreeMap::new();
+    let mut daemon_messages: Vec<(DaemonId, Vec<u8>)> = Vec::new();
 
     for (machine, nodes_on_machine) in &nodes_by_daemon {
         let spawn_nodes = nodes_on_machine.iter().map(|n| n.id.clone()).collect();
         tracing::debug!(
             "Spawning dataflow `{uuid}` on machine `{machine:?}` (nodes: {spawn_nodes:?})"
         );
+
+        let daemon_id = resolve_daemon_for_machine(daemon_connections, machine.map(|m| m.as_str()))
+            .wrap_err_with(|| format!("failed to resolve daemon for machine `{machine:?}`"))?;
 
         let spawn_command = SpawnDataflowNodes {
             build_id,
@@ -63,10 +72,7 @@ pub(super) async fn spawn_dataflow(
             timestamp: clock.new_timestamp(),
         })?;
 
-        let daemon_id =
-            spawn_dataflow_on_machine(daemon_connections, machine.map(|m| m.as_str()), &message)
-                .await
-                .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine:?}`"))?;
+        daemon_messages.push((daemon_id.clone(), message));
         daemons.insert(daemon_id.clone());
 
         // Map each node on this machine to its daemon
@@ -75,20 +81,35 @@ pub(super) async fn spawn_dataflow(
         }
     }
 
-    tracing::info!("successfully triggered dataflow spawn `{uuid}`",);
-
-    Ok(SpawnedDataflow {
+    Ok(DataflowPlan {
         uuid,
         daemons,
         nodes,
         node_to_daemon,
+        daemon_messages,
     })
 }
 
-async fn spawn_dataflow_on_machine(
-    daemon_connections: &mut DaemonConnections,
+/// Send the prepared spawn commands to the daemons and wait for acknowledgments.
+pub(super) async fn execute_dataflow_plan(
+    uuid: Uuid,
+    daemon_messages: &[(DaemonId, Vec<u8>)],
+    daemon_connections: &DaemonConnections,
+) -> eyre::Result<()> {
+    for (daemon_id, message) in daemon_messages {
+        send_spawn_to_daemon(daemon_connections, daemon_id, message)
+            .await
+            .wrap_err_with(|| format!("failed to spawn dataflow on daemon `{daemon_id}`"))?;
+    }
+
+    tracing::info!("successfully triggered dataflow spawn `{uuid}`",);
+
+    Ok(())
+}
+
+fn resolve_daemon_for_machine(
+    daemon_connections: &DaemonConnections,
     machine: Option<&str>,
-    message: &[u8],
 ) -> Result<DaemonId, eyre::ErrReport> {
     let daemon_id = match machine {
         Some(machine) => daemon_connections
@@ -101,15 +122,24 @@ async fn spawn_dataflow_on_machine(
             .wrap_err("no unnamed daemon connections")?
             .clone(),
     };
+    Ok(daemon_id)
+}
 
-    let daemon_connection = daemon_connections
-        .get_mut(&daemon_id)
+async fn send_spawn_to_daemon(
+    daemon_connections: &DaemonConnections,
+    daemon_id: &DaemonId,
+    message: &[u8],
+) -> Result<(), eyre::ErrReport> {
+    // Clone the Arc<Mutex<TcpStream>> and immediately drop the DashMap lock.
+    let stream = daemon_connections
+        .get_stream(daemon_id)
         .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?;
-    tcp_send(&mut daemon_connection.stream, message)
+    let mut stream = stream.lock().await;
+    tcp_send(&mut stream, message)
         .await
         .wrap_err("failed to send spawn message to daemon")?;
 
-    let reply_raw = tcp_receive(&mut daemon_connection.stream)
+    let reply_raw = tcp_receive(&mut stream)
         .await
         .wrap_err("failed to receive spawn reply from daemon")?;
     match serde_json::from_slice(&reply_raw)
@@ -120,12 +150,13 @@ async fn spawn_dataflow_on_machine(
             .wrap_err("daemon returned an error")?,
         _ => bail!("unexpected reply"),
     }
-    Ok(daemon_id)
+    Ok(())
 }
 
-pub struct SpawnedDataflow {
+pub struct DataflowPlan {
     pub uuid: Uuid,
     pub daemons: BTreeSet<DaemonId>,
     pub nodes: BTreeMap<NodeId, ResolvedNode>,
     pub node_to_daemon: BTreeMap<NodeId, DaemonId>,
+    pub daemon_messages: Vec<(DaemonId, Vec<u8>)>,
 }
