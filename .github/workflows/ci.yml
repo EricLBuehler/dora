@@ -467,7 +467,7 @@ jobs:
         run: |
           echo "Running CI Operator Test"
           dora build examples/python-operator-dataflow/dataflow.yml --uv
-          dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 10s
+          dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 20s
 
       - name: "Test Python Example: Multiple Arrays"
         timeout-minutes: 30
