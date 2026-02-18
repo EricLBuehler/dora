@@ -38,7 +38,7 @@ pub struct Completion {
     shell: Option<Shell>,
 }
 impl Executable for Completion {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         let shell = if let Some(sh) = self.shell {
             sh
         } else {

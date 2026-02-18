@@ -3,23 +3,28 @@
 //! The `dora start` command does not run any build commands, nor update git dependencies or similar. Use `dora build` for that.
 
 use super::{Executable, default_tracing};
+use crate::tcp::AsyncTcpConnection;
 use crate::{
     command::start::attach::attach_dataflow,
-    common::{connect_to_coordinator, local_working_dir, resolve_dataflow, write_events_to},
+    common::{
+        connect_to_coordinator_rpc, local_working_dir, long_context, resolve_dataflow, rpc,
+        write_events_to,
+    },
     output::print_log_message,
     session::DataflowSession,
 };
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use dora_core::{
     descriptor::{Descriptor, DescriptorExt},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
 use dora_message::{
-    cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
+    cli_to_coordinator::{CliControlClient, LegacyControlRequest, StartRequest},
+    common::LogMessage,
+    tarpc,
 };
-use eyre::{Context, bail};
+use eyre::Context;
 use std::{
-    net::{IpAddr, SocketAddr, TcpStream},
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
 };
 use uuid::Uuid;
@@ -56,12 +61,12 @@ pub struct Start {
 }
 
 impl Executable for Start {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let coordinator_socket = (self.coordinator_addr, self.coordinator_port).into();
+        let coordinator_socket: SocketAddr = (self.coordinator_addr, self.coordinator_port).into();
 
-        let (dataflow, dataflow_descriptor, mut session, dataflow_id) =
-            start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv)?;
+        let (dataflow, dataflow_descriptor, client, dataflow_id) =
+            start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv).await?;
 
         let attach = match (self.attach, self.detach) {
             (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
@@ -84,97 +89,93 @@ impl Executable for Start {
                 dataflow_descriptor,
                 dataflow,
                 dataflow_id,
-                &mut *session,
+                &client,
                 self.hot_reload,
                 coordinator_socket,
                 log_level,
             )
+            .await
         } else {
             let print_daemon_name = dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some());
             // wait until dataflow is started
             wait_until_dataflow_started(
                 dataflow_id,
-                &mut session,
+                &client,
                 coordinator_socket,
                 log::LevelFilter::Info,
                 print_daemon_name,
             )
+            .await
         }
     }
 }
 
-fn start_dataflow(
+async fn start_dataflow(
     dataflow: String,
     name: Option<String>,
     coordinator_socket: SocketAddr,
     uv: bool,
-) -> Result<(PathBuf, Descriptor, Box<TcpRequestReplyConnection>, Uuid), eyre::Error> {
-    let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
+) -> Result<(PathBuf, Descriptor, CliControlClient, Uuid), eyre::Error> {
+    let dataflow = resolve_dataflow(dataflow)
+        .await
+        .context("could not resolve dataflow")?;
     let dataflow_descriptor =
         Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
     let dataflow_session =
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
 
-    let mut session = connect_to_coordinator(coordinator_socket)
+    let client = connect_to_coordinator_rpc(coordinator_socket.ip(), coordinator_socket.port())
+        .await
         .wrap_err("failed to connect to dora coordinator")?;
 
-    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &mut *session)?;
+    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &client).await?;
 
-    let dataflow_id = {
-        let dataflow = dataflow_descriptor.clone();
-        let session: &mut TcpRequestReplyConnection = &mut *session;
-        let reply_raw = session
-            .request(
-                &serde_json::to_vec(&ControlRequest::Start {
-                    build_id: dataflow_session.build_id,
-                    session_id: dataflow_session.session_id,
-                    dataflow,
-                    name,
-                    local_working_dir,
-                    uv,
-                    write_events_to: write_events_to(),
-                })
-                .unwrap(),
-            )
-            .wrap_err("failed to send start dataflow message")?;
+    let dataflow_id = rpc(
+        "start dataflow",
+        client.start(
+            tarpc::context::current(),
+            StartRequest {
+                build_id: dataflow_session.build_id,
+                session_id: dataflow_session.session_id,
+                dataflow: dataflow_descriptor.clone(),
+                name,
+                local_working_dir,
+                uv,
+                write_events_to: write_events_to(),
+            },
+        ),
+    )
+    .await?;
+    eprintln!("dataflow start triggered: {dataflow_id}");
 
-        let result: ControlRequestReply =
-            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-        match result {
-            ControlRequestReply::DataflowStartTriggered { uuid } => {
-                eprintln!("dataflow start triggered: {uuid}");
-                uuid
-            }
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected start dataflow reply: {other:?}"),
-        }
-    };
-    Ok((dataflow, dataflow_descriptor, session, dataflow_id))
+    Ok((dataflow, dataflow_descriptor, client, dataflow_id))
 }
 
-fn wait_until_dataflow_started(
+async fn wait_until_dataflow_started(
     dataflow_id: Uuid,
-    session: &mut Box<TcpRequestReplyConnection>,
+    client: &CliControlClient,
     coordinator_addr: SocketAddr,
     log_level: log::LevelFilter,
     print_daemon_id: bool,
 ) -> eyre::Result<()> {
-    // subscribe to log messages
-    let mut log_session = TcpConnection {
-        stream: TcpStream::connect(coordinator_addr)
+    // subscribe to log messages (TCP streaming)
+    let mut log_session = AsyncTcpConnection {
+        stream: tokio::net::TcpStream::connect(coordinator_addr)
+            .await
             .wrap_err("failed to connect to dora coordinator")?,
     };
     log_session
         .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe {
+            &serde_json::to_vec(&LegacyControlRequest::LogSubscribe {
                 dataflow_id,
                 level: log_level,
             })
             .wrap_err("failed to serialize message")?,
         )
+        .await
         .wrap_err("failed to send log subscribe request to coordinator")?;
-    std::thread::spawn(move || {
-        while let Ok(raw) = log_session.receive() {
+    tokio::spawn(async move {
+        while let Ok(raw) = log_session.receive().await {
             let parsed: eyre::Result<LogMessage> =
                 serde_json::from_slice(&raw).context("failed to parse log message");
             match parsed {
@@ -188,18 +189,12 @@ fn wait_until_dataflow_started(
         }
     });
 
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::WaitForSpawn { dataflow_id }).unwrap())
-        .wrap_err("failed to send start dataflow message")?;
+    rpc(
+        "wait for dataflow spawn",
+        client.wait_for_spawn(long_context(), dataflow_id),
+    )
+    .await?;
+    eprintln!("dataflow started: {dataflow_id}");
 
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowSpawned { uuid } => {
-            eprintln!("dataflow started: {uuid}");
-        }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    }
     Ok(())
 }

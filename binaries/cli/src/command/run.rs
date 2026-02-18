@@ -15,7 +15,6 @@ use dora_daemon::{Daemon, LogDestination, flume};
 use duration_str::parse as parse_duration_str;
 use eyre::Context;
 use std::time::Duration;
-use tokio::runtime::Builder;
 
 #[derive(Debug, clap::Args)]
 /// Run a dataflow locally.
@@ -61,19 +60,17 @@ pub fn run_func(dataflow: String, uv: bool) -> eyre::Result<()> {
 pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
     let mut run = Run::new(dataflow);
     run.uv = uv;
-    run.execute()
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("tokio runtime failed")?;
+    rt.block_on(run.execute())
 }
 
 impl Executable for Run {
-    fn execute(self) -> eyre::Result<()> {
-        let rt = Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .context("tokio runtime failed")?;
-
+    async fn execute(self) -> eyre::Result<()> {
         #[cfg(feature = "tracing")]
         let _guard = {
-            let _enter = rt.enter();
             let env_log = std::env::var("RUST_LOG").unwrap_or("info".to_string());
             dora_tracing::init_tracing_subscriber(
                 "dora-run",
@@ -84,8 +81,9 @@ impl Executable for Run {
             .context("failed to initialize tracing")?
         };
 
-        let dataflow_path =
-            resolve_dataflow(self.dataflow).context("could not resolve dataflow")?;
+        let dataflow_path = resolve_dataflow(self.dataflow)
+            .await
+            .context("could not resolve dataflow")?;
         let dataflow_session = DataflowSession::read_session(&dataflow_path)
             .context("failed to read DataflowSession")?;
 
@@ -96,7 +94,7 @@ impl Executable for Run {
             }
         });
 
-        let result = rt.block_on(Daemon::run_dataflow(
+        let result = Daemon::run_dataflow(
             &dataflow_path,
             dataflow_session.build_id,
             dataflow_session.local_build,
@@ -105,7 +103,8 @@ impl Executable for Run {
             LogDestination::Channel { sender: log_tx },
             write_events_to(),
             self.stop_after,
-        ))?;
+        )
+        .await?;
         handle_dataflow_result(result, None)
     }
 }

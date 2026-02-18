@@ -18,9 +18,8 @@ mod system;
 mod topic;
 mod up;
 
-pub use build::build;
+pub use build::{build, build_async};
 pub use run::{Run, run, run_func};
-pub use system::check_environment;
 
 use build::Build;
 use completion::Completion;
@@ -98,32 +97,32 @@ fn default_tracing() -> eyre::Result<()> {
 }
 
 pub trait Executable {
-    fn execute(self) -> eyre::Result<()>;
+    fn execute(self) -> impl std::future::Future<Output = eyre::Result<()>> + Send;
 }
 
 impl Executable for Command {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         match self {
-            Command::System(args) => args.execute(),
-            Command::Check(args) => args.execute(),
-            Command::Coordinator(args) => args.execute(),
-            Command::Graph(args) => args.execute(),
-            Command::Build(args) => args.execute(),
-            Command::New(args) => args.execute(),
-            Command::Run(args) => args.execute(),
-            Command::Up(args) => args.execute(),
-            Command::Destroy(args) => args.execute(),
-            Command::Start(args) => args.execute(),
-            Command::Stop(args) => args.execute(),
-            Command::List(args) => args.execute(),
-            Command::Logs(args) => args.execute(),
-            Command::Inspect(args) => args.execute(),
-            Command::Daemon(args) => args.execute(),
-            Command::Self_ { command } => command.execute(),
-            Command::Runtime(args) => args.execute(),
-            Command::Topic(args) => args.execute(),
-            Command::Node(args) => args.execute(),
-            Command::Completion(args) => args.execute(),
+            Command::System(args) => args.execute().await,
+            Command::Check(args) => args.execute().await,
+            Command::Coordinator(args) => args.execute().await,
+            Command::Graph(args) => args.execute().await,
+            Command::Build(args) => args.execute().await,
+            Command::New(args) => args.execute().await,
+            Command::Run(args) => args.execute().await,
+            Command::Up(args) => args.execute().await,
+            Command::Destroy(args) => args.execute().await,
+            Command::Start(args) => args.execute().await,
+            Command::Stop(args) => args.execute().await,
+            Command::List(args) => args.execute().await,
+            Command::Logs(args) => args.execute().await,
+            Command::Inspect(args) => args.execute().await,
+            Command::Daemon(args) => args.execute().await,
+            Command::Self_ { command } => command.execute().await,
+            Command::Runtime(args) => args.execute().await,
+            Command::Topic(args) => args.execute().await,
+            Command::Node(args) => args.execute().await,
+            Command::Completion(args) => args.execute().await,
         }
     }
 }
