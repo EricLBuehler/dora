@@ -104,15 +104,12 @@ impl DescriptorExt for Descriptor {
                 }),
             };
 
-            let mut all_env = self.env.clone().unwrap_or_default();
-            if let Some(node_env) = node.env {
-                all_env.extend(node_env);
-            }
-
-            let env = if all_env.is_empty() {
-                None
-            } else {
-                Some(all_env)
+            let env = match (self.env.clone(), node.env) {
+                (None, node_env) => node_env,
+                (Some(mut self_env), node_env) => {
+                    self_env.extend(node_env.unwrap_or_default());
+                    Some(self_env)
+                }
             };
 
             resolved.insert(
