@@ -2563,43 +2563,53 @@ impl Daemon {
                     )
                     .await;
 
-                self.dataflow_node_results
-                    .entry(dataflow_id)
-                    .or_default()
-                    .insert(node_id.clone(), node_result.clone());
+                if restart {
+                    logger
+                        .log(
+                            LogLevel::Info,
+                            Some("daemon".into()),
+                            "node will be restarted",
+                        )
+                        .await;
+                } else {
+                    self.dataflow_node_results
+                        .entry(dataflow_id)
+                        .or_default()
+                        .insert(node_id.clone(), node_result.clone());
 
-                // Propagate error to downstream nodes only for genuine user-code failures.
-                // Cascading errors (caused by a previously failed node), grace-duration
-                // kills (dora's own timeout), and spawn failures are excluded:
-                // - Cascading: downstream nodes already received a NodeFailed for the root cause.
-                // - GraceDuration: this is dora operational behaviour, not a user-code error.
-                // - FailedToSpawn: the node never ran, so its outputs were never open.
-                if let Err(node_error) = &node_result {
-                    if matches!(node_error.cause, NodeErrorCause::Other { .. }) {
-                        let error_message = format!("{}", node_error);
-                        if let Err(err) = self
-                            .propagate_node_error(dataflow_id, node_id.clone(), error_message)
-                            .await
-                        {
-                            tracing::warn!(
-                                "Failed to propagate error for node {}/{}: {err:?}",
-                                dataflow_id,
-                                node_id
-                            );
+                    // Propagate error to downstream nodes only for genuine user-code failures.
+                    // Cascading errors (caused by a previously failed node), grace-duration
+                    // kills (dora's own timeout), and spawn failures are excluded:
+                    // - Cascading: downstream nodes already received a NodeFailed for the root cause.
+                    // - GraceDuration: this is dora operational behaviour, not a user-code error.
+                    // - FailedToSpawn: the node never ran, so its outputs were never open.
+                    if let Err(node_error) = &node_result {
+                        if matches!(node_error.cause, NodeErrorCause::Other { .. }) {
+                            let error_message = format!("{}", node_error);
+                            if let Err(err) = self
+                                .propagate_node_error(dataflow_id, node_id.clone(), error_message)
+                                .await
+                            {
+                                tracing::warn!(
+                                    "Failed to propagate error for node {}/{}: {err:?}",
+                                    dataflow_id,
+                                    node_id
+                                );
+                            }
                         }
                     }
-                }
 
-                // Handle node stop (this will send NodeStopped event internally)
-                if let Err(err) = self
-                    .handle_node_stop(dataflow_id, &node_id, dynamic_node)
-                    .await
-                {
-                    tracing::warn!(
-                        "Error handling node stop for {}/{}: {err:?}",
-                        dataflow_id,
-                        node_id
-                    );
+                    // Handle node stop (this will send NodeStopped event internally)
+                    if let Err(err) = self
+                        .handle_node_stop(dataflow_id, &node_id, dynamic_node)
+                        .await
+                    {
+                        tracing::warn!(
+                            "Error handling node stop for {}/{}: {err:?}",
+                            dataflow_id,
+                            node_id
+                        );
+                    }
                 }
             }
         }
