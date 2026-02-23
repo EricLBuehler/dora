@@ -2504,6 +2504,10 @@ impl Daemon {
                             })
                             .cloned();
 
+                        let grace_duration_kill = dataflow
+                            .map(|d| d.grace_duration_kills.contains(&node_id))
+                            .unwrap_or_default();
+
                         let cause = match caused_by_node {
                             Some(caused_by_node) => {
                                 logger
@@ -2516,6 +2520,7 @@ impl Daemon {
 
                                 NodeErrorCause::Cascading { caused_by_node }
                             }
+                            None if grace_duration_kill => NodeErrorCause::GraceDuration,
                             None => {
                                 let cause = dataflow
                                     .and_then(|d| d.node_stderr_most_recent.get(&node_id))
