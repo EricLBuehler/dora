@@ -109,7 +109,7 @@ pub(crate) struct CoordinatorOptions {
 
 impl CoordinatorOptions {
     pub async fn connect_rpc(&self) -> eyre::Result<CliControlClient> {
-        connect_to_coordinator_rpc(self.coordinator_addr, self.coordinator_port).await
+        connect_and_check_version(self.coordinator_addr, self.coordinator_port).await
     }
 }
 
@@ -179,4 +179,41 @@ pub(crate) fn write_events_to() -> Option<PathBuf> {
     std::env::var("DORA_WRITE_EVENTS_TO")
         .ok()
         .map(PathBuf::from)
+}
+
+/// Connect to the coordinator and check that the message format version is compatible.
+pub(crate) async fn connect_and_check_version(
+    addr: IpAddr,
+    control_port: u16,
+) -> eyre::Result<CliControlClient> {
+    let client = connect_to_coordinator_rpc(addr, control_port).await?;
+    check_coordinator_version(&client).await?;
+    Ok(client)
+}
+
+/// Check that the coordinator's message format version matches this CLI's.
+pub(crate) async fn check_coordinator_version(client: &CliControlClient) -> eyre::Result<()> {
+    let version_info = match client.get_version(tarpc::context::current()).await {
+        Ok(v) => v,
+        Err(_) => {
+            bail!(
+                "Failed to query coordinator version. \
+                 The coordinator may be running an older version of dora \
+                 that is incompatible with this CLI (message format v{}).",
+                dora_message::VERSION
+            );
+        }
+    };
+    let local = semver::Version::parse(dora_message::VERSION)
+        .map_err(|e| eyre::eyre!("failed to parse local message format version: {e}"))?;
+    let remote = semver::Version::parse(&version_info.message_format_version)
+        .map_err(|e| eyre::eyre!("failed to parse coordinator message format version: {e}"))?;
+    if local != remote {
+        bail!(
+            "CLI message format (v{local}) is not compatible with \
+             coordinator message format (v{remote}). \
+             Please ensure CLI and coordinator are the same version."
+        );
+    }
+    Ok(())
 }
