@@ -208,7 +208,7 @@ pub(crate) async fn check_coordinator_version(client: &CliControlClient) -> eyre
         .map_err(|e| eyre::eyre!("failed to parse local message format version: {e}"))?;
     let remote = semver::Version::parse(&version_info.message_format_version)
         .map_err(|e| eyre::eyre!("failed to parse coordinator message format version: {e}"))?;
-    if local != remote {
+    if !semver_compatible(&local, &remote) {
         bail!(
             "CLI message format (v{local}) is not compatible with \
              coordinator message format (v{remote}). \
@@ -216,4 +216,62 @@ pub(crate) async fn check_coordinator_version(client: &CliControlClient) -> eyre
         );
     }
     Ok(())
+}
+
+/// Check if two semver versions are compatible using Rust/Cargo conventions:
+/// - For `0.0.x`: only the exact same version is compatible.
+/// - For `0.x.y` (x > 0): major and minor must match (patch may differ).
+/// - For `>=1.0.0`: only major must match.
+fn semver_compatible(a: &semver::Version, b: &semver::Version) -> bool {
+    if a.major != b.major {
+        return false;
+    }
+    if a.major == 0 {
+        if a.minor != b.minor {
+            return false;
+        }
+        if a.minor == 0 {
+            return a.patch == b.patch;
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(s: &str) -> semver::Version {
+        semver::Version::parse(s).unwrap()
+    }
+
+    #[test]
+    fn test_semver_compatible_pre_1_0() {
+        // Same minor: compatible (patch may differ)
+        assert!(semver_compatible(&v("0.7.0"), &v("0.7.0")));
+        assert!(semver_compatible(&v("0.7.0"), &v("0.7.1")));
+        assert!(semver_compatible(&v("0.7.3"), &v("0.7.1")));
+
+        // Different minor: incompatible
+        assert!(!semver_compatible(&v("0.7.0"), &v("0.8.0")));
+        assert!(!semver_compatible(&v("0.6.0"), &v("0.7.0")));
+    }
+
+    #[test]
+    fn test_semver_compatible_0_0_x() {
+        // 0.0.x requires exact patch match
+        assert!(semver_compatible(&v("0.0.1"), &v("0.0.1")));
+        assert!(!semver_compatible(&v("0.0.1"), &v("0.0.2")));
+    }
+
+    #[test]
+    fn test_semver_compatible_post_1_0() {
+        // Same major: compatible
+        assert!(semver_compatible(&v("1.0.0"), &v("1.0.0")));
+        assert!(semver_compatible(&v("1.0.0"), &v("1.2.3")));
+        assert!(semver_compatible(&v("2.1.0"), &v("2.5.3")));
+
+        // Different major: incompatible
+        assert!(!semver_compatible(&v("1.0.0"), &v("2.0.0")));
+    }
 }
