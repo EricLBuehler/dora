@@ -1158,8 +1158,13 @@ impl Daemon {
                         format!("failed to handle NodeFailed: no running dataflow with ID `{dataflow_id}`")
                     })?;
 
-                    // Use the same helper function to find and notify local receivers
-                    // (remote_receivers is ignored here since we're already handling a remote event)
+                    // Deduplicate: the sending daemon publishes one NodeFailed per output topic,
+                    // so we may receive the same event multiple times. Only notify local receivers
+                    // once per source node.
+                    if !dataflow.handled_node_failed.insert(source_node_id.clone()) {
+                        return Result::<(), eyre::Report>::Ok(());
+                    }
+
                     let (_outputs, _remote_receivers) = Self::find_and_notify_local_receivers(
                         dataflow,
                         &source_node_id,
@@ -2993,6 +2998,13 @@ pub struct RunningDataflow {
     cascading_error_causes: CascadingErrorCauses,
     grace_duration_kills: Arc<crossbeam_skiplist::SkipSet<NodeId>>,
 
+    /// Tracks nodes whose NodeFailed event has already been delivered to local receivers.
+    ///
+    /// Because zenoh is topic-based, a remote daemon may publish one NodeFailed per output
+    /// of the failed node. Without deduplication the receiving daemon would call
+    /// find_and_notify_local_receivers once per message, delivering duplicate events.
+    handled_node_failed: BTreeSet<NodeId>,
+
     node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
 
     publishers: BTreeMap<OutputId, zenoh::pubsub::Publisher<'static>>,
@@ -3037,6 +3049,7 @@ impl RunningDataflow {
             empty_set: BTreeSet::new(),
             cascading_error_causes: Default::default(),
             grace_duration_kills: Default::default(),
+            handled_node_failed: BTreeSet::new(),
             node_stderr_most_recent: BTreeMap::new(),
             publishers: Default::default(),
             finished_tx,
