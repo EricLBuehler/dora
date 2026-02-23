@@ -5,8 +5,8 @@ This example demonstrates the automatic error event propagation feature, which n
 ## Overview
 
 The dataflow consists of two nodes:
-- **Producer**: Simulates a processing error and exits with a non-zero exit code
-- **Consumer**: Automatically receives an error event when the producer fails and handles it gracefully
+- **Producer**: Sends a few messages, then simulates a processing error by exiting with a non-zero exit code
+- **Consumer**: Receives the messages, then automatically receives a `NodeFailed` event when the producer crashes and handles it gracefully
 
 ## Running the Example
 
@@ -25,19 +25,21 @@ dora run examples/error-propagation/dataflow.yml
 **Producer:**
 ```
 Starting...
-Processing message 0
-Processing message 1
-Processing message 2
+Sent message 0
+Sent message 1
+Sent message 2
 Encountered an error! Exiting with error code...
-Error: Simulated error: exiting with exit code 1
+Error: Simulated processing failure
 ```
 
 **Consumer:**
 ```
 Starting...
+Received input on data
+Received input on data
+Received input on data
 ⚠️  Received error from node 'producer' affecting inputs ["data"]: exited with code 1
 Handling error in some way...
 Input data closed
 Exiting
 ```
-

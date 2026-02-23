@@ -2560,11 +2560,6 @@ impl Daemon {
                         )
                         .await;
                 } else {
-                    self.dataflow_node_results
-                        .entry(dataflow_id)
-                        .or_default()
-                        .insert(node_id.clone(), node_result.clone());
-
                     // Propagate error to downstream nodes only for genuine user-code failures.
                     // Cascading errors (caused by a previously failed node), grace-duration
                     // kills (dora's own timeout), and spawn failures are excluded:
@@ -2587,17 +2582,13 @@ impl Daemon {
                         }
                     }
 
-                    // Handle node stop (this will send NodeStopped event internally)
-                    if let Err(err) = self
-                        .handle_node_stop(dataflow_id, &node_id, dynamic_node)
-                        .await
-                    {
-                        tracing::warn!(
-                            "Error handling node stop for {}/{}: {err:?}",
-                            dataflow_id,
-                            node_id
-                        );
-                    }
+                    self.dataflow_node_results
+                        .entry(dataflow_id)
+                        .or_default()
+                        .insert(node_id.clone(), node_result);
+
+                    self.handle_node_stop(dataflow_id, &node_id, dynamic_node)
+                        .await?;
                 }
             }
         }
