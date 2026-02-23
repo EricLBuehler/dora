@@ -34,10 +34,10 @@ Error: Simulated error: exiting with exit code 1
 
 **Consumer:**
 ```
-[Consumer] Starting...
-[Consumer] ⚠️  Received error from node 'producer' affecting inputs ["data"]: exited with code 1
-[Consumer] Handling error in some way...
-[Consumer] Input data closed
-[Consumer] Exiting
+Starting...
+⚠️  Received error from node 'producer' affecting inputs ["data"]: exited with code 1
+Handling error in some way...
+Input data closed
+Exiting
 ```
 

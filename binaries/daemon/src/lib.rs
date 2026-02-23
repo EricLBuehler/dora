@@ -1956,7 +1956,7 @@ impl Daemon {
                 for (receiver_node_id, input_id) in receivers {
                     affected_by_receiver
                         .entry(receiver_node_id.clone())
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(input_id.clone());
                 }
             }

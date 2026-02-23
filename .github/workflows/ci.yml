@@ -389,8 +389,11 @@ jobs:
         shell: bash
         run: |
           dora build examples/error-propagation/dataflow.yml
-          # ignore error since example is supposed to produce error
-          dora run examples/error-propagation/dataflow.yml || true
+          # The producer exits with code 1 on purpose; dora run reflects that exit code.
+          # Capture output and verify the consumer received the NodeFailed event.
+          output=$(dora run examples/error-propagation/dataflow.yml 2>&1 || true)
+          echo "$output"
+          echo "$output" | grep -q "Received error from node" || { echo "ERROR: consumer did not receive NodeFailed event"; exit 1; }
 
       - uses: actions/setup-python@v5
         with:
