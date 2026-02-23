@@ -1991,7 +1991,7 @@ impl Daemon {
     /// It sends `NodeFailed` events to all downstream nodes that consume outputs from the failed node.
     /// For nodes on the same daemon, events are sent directly. For nodes on other daemons,
     /// events are routed through zenoh by sending to all outputs (to ensure all subscribing daemons receive it).
-    async fn propagate_node_error(
+    async fn send_node_failed_events(
         &mut self,
         dataflow_id: Uuid,
         source_node_id: NodeId,
@@ -2564,7 +2564,7 @@ impl Daemon {
                     if matches!(node_error.cause, NodeErrorCause::Other { .. }) {
                         let error_message = format!("{node_error}");
                         if let Err(err) = self
-                            .propagate_node_error(dataflow_id, node_id.clone(), error_message)
+                            .send_node_failed_events(dataflow_id, node_id.clone(), error_message)
                             .await
                         {
                             tracing::warn!(
