@@ -2568,18 +2568,25 @@ impl Daemon {
                     .or_default()
                     .insert(node_id.clone(), node_result.clone());
 
-                // If the node failed (non-zero exit code), propagate error to downstream nodes
+                // Propagate error to downstream nodes only for genuine user-code failures.
+                // Cascading errors (caused by a previously failed node), grace-duration
+                // kills (dora's own timeout), and spawn failures are excluded:
+                // - Cascading: downstream nodes already received a NodeFailed for the root cause.
+                // - GraceDuration: this is dora operational behaviour, not a user-code error.
+                // - FailedToSpawn: the node never ran, so its outputs were never open.
                 if let Err(node_error) = &node_result {
-                    let error_message = format!("{}", node_error);
-                    if let Err(err) = self
-                        .propagate_node_error(dataflow_id, node_id.clone(), error_message)
-                        .await
-                    {
-                        tracing::warn!(
-                            "Failed to propagate error for node {}/{}: {err:?}",
-                            dataflow_id,
-                            node_id
-                        );
+                    if matches!(node_error.cause, NodeErrorCause::Other { .. }) {
+                        let error_message = format!("{}", node_error);
+                        if let Err(err) = self
+                            .propagate_node_error(dataflow_id, node_id.clone(), error_message)
+                            .await
+                        {
+                            tracing::warn!(
+                                "Failed to propagate error for node {}/{}: {err:?}",
+                                dataflow_id,
+                                node_id
+                            );
+                        }
                     }
                 }
 
