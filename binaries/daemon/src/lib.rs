@@ -603,16 +603,6 @@ impl Daemon {
                         tracing::info!("exiting daemon because all dataflows are finished");
                         break;
                     }
-                    // Fallback for example mode: exit when all dataflows finish, even if exit_when_done
-                    // tracking didn't catch all nodes. This handles edge cases where nodes finish
-                    // before being added to exit_when_done (e.g., very fast nodes or initialization issues).
-                    // The primary exit path (lines 553-560) should handle normal cases.
-                    if self.exit_when_done.is_some() && self.running.is_empty() {
-                        tracing::info!(
-                            "exiting daemon because all dataflows are finished (example mode fallback)"
-                        );
-                        break;
-                    }
                 }
             }
 
@@ -1748,13 +1738,6 @@ impl Daemon {
                     Ok(dataflow) => {
                         Self::subscribe(dataflow, node_id.clone(), event_sender, &self.clock).await;
 
-                        // Note: handle_node_subscription takes ownership of reply_sender and stores it
-                        // in waiting_subscribers. The reply will be sent later by answer_subscribe_requests.
-                        // If handle_node_subscription returns an error, the reply_sender is still in
-                        // waiting_subscribers and should be answered by answer_subscribe_requests.
-                        // However, if there's an error, answer_subscribe_requests might not be called,
-                        // so the reply might not be sent. Our fix in process_daemon_event should handle
-                        // this case by sending an error reply if the daemon main loop doesn't respond.
                         let status = dataflow
                             .pending_nodes
                             .handle_node_subscription(
