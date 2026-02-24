@@ -1523,6 +1523,7 @@ dependencies = [
  "ratatui",
  "self-replace",
  "self_update",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml 0.9.34+deprecated",
