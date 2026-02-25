@@ -173,7 +173,10 @@ pub async fn spawn_listener_loop(
             });
             let abort_handle = handle.abort_handle();
 
-            Ok((DaemonCommunication::UnixDomain { socket_file }, Some(abort_handle)))
+            Ok((
+                DaemonCommunication::UnixDomain { socket_file },
+                Some(abort_handle),
+            ))
         }
         #[cfg(not(unix))]
         LocalCommunicationConfig::UnixDomain => {
